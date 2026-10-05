@@ -5,7 +5,8 @@ from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import LLMToolSelectorMiddleware
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.store.sqlite import SqliteStore
+from fastapi import HTTPException
+
 
 from errors import identify_module, should_retry
 #导入长期记忆（用户喜好）模块
@@ -38,7 +39,7 @@ from middleware import (
 )
 from models import model, qwen_sw_f
 from prompts import SYSTEM_PROMPT
-from tools import get_amap_tools, get_html_tools, web_search
+from tools import get_amap_tools, web_search
 
 #定义自定义状态
 class CustomState(AgentState):
@@ -46,12 +47,10 @@ class CustomState(AgentState):
     current_plan_key: NotRequired[str]       # 当前计划key
     _cold_zone_injected: NotRequired[bool]   # 是否已注入冷区
 
-#异步运行 主函数
-async def main() -> None:
+#异步运行 agent工厂函数
+async def create_agent_instance(store) -> None:
     amap_tools = await get_amap_tools()
-    html_tools = await get_html_tools()
     tools = [
-        *html_tools,
         *amap_tools,
         web_search,
         save_user_preferences,
@@ -77,61 +76,52 @@ async def main() -> None:
         model=qwen_sw_f,
         system_prompt="请根据用户问题，选择最相关的旅行规划工具。",
     )
-    #在文件管理器中创建agent
-    with SqliteStore.from_conn_string("./memory/测试.db") as store:
-        agent = create_agent(
-            model=model,
-            store=store,
-            tools=tools,
-            checkpointer=InMemorySaver(),
-            middleware=[
-                inject_cold_zone_middleware,
-                clean_expired_cold_zone_middleware,
-                fix_orphaned_tool_calls_middleware,
-                tool_selector,
-            ],
-            state_schema=CustomState,
-            system_prompt=SYSTEM_PROMPT,
-        )
-        await chat_loop(agent)
+    # 创建 agent（原文件管理器创建agent）
+    agent = create_agent(
+        model=model,
+        tools=tools,
+        store=store,
+        checkpointer=InMemorySaver(),
+        middleware=[
+            inject_cold_zone_middleware,
+            clean_expired_cold_zone_middleware,
+            fix_orphaned_tool_calls_middleware,
+            tool_selector,
+        ],
+        state_schema=CustomState,
+        system_prompt=SYSTEM_PROMPT,
+    )
+    return agent
 
-#聊天循环
-async def chat_loop(agent) -> None:
-    config = {"configurable": {"thread_id": "user_1"}}
-    while True:
-        user_message = input("用户（输入 esc 退出）：")
-        if user_message == "esc":
+#聊天入口+异常重试
+async def chat_loop(agent,user_message,user_id):
+    config = {"configurable": {"thread_id": user_id}}
+    input_data = {"messages": [HumanMessage(content=user_message)],
+                          "user_id": user_id,
+                          "current_plan_key": None, # 当前计划key,暂未闭环且不清楚当初为何设计为何烂尾
+                        }   
+    #异常重试机制
+    for attempt in range(3):
+        #捕获异常
+        try:                   
+            async for message_chunk, metadata in agent.astream(input_data, config=config,stream_mode='messages'):
+                #只返回.content信息
+                if metadata.get("ls_model_name") != "qwen-max":
+                    continue
+                text = message_chunk.text
+                if text:
+                    yield text
             break
-        #异常重试机制
-        for attempt in range(3):
-            #捕获异常
-            try:
-                if attempt == 0:    
-                    input_data = {"messages": [HumanMessage(content=user_message)],
-                                  "user_id": "user_1",
-                                  "current_plan_key": None, # 当前计划key
-                                  "_cold_zone_injected": False, # 是否已注入冷区
-                                }                
-               
-                else:
-                    input_data =  {"user_id": "user_1",}
-                run = await agent.ainvoke(input_data, config=config)
-                print(run["messages"][-1].content)
-                break
-            #异常处理
-            except Exception as e:
-                module = identify_module(e)
-                # 判断是否可重试
-                if should_retry(e):
-                    # 可重试的错误
-                    wait = 2 ** (attempt + 1)
-                    print(f"[{module}] API 限流或错误，{wait}秒后自动重试...")
-                    await asyncio.sleep(wait)
-                else:
-                    # 不可重试的错误
-                    print(f"[{module}] 不可重试的错误：{str(e).upper()}")
-                    raise
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        #异常处理
+        except Exception as e:
+            module = identify_module(e)
+            # 判断是否可重试
+            if should_retry(e):
+                # 可重试的错误
+                wait = 2 ** (attempt + 1)
+                print(f"[{module}] API 限流或错误，{wait}秒后自动重试...")
+                await asyncio.sleep(wait)
+            else:
+                # 不可重试的错误
+                exce = f"[{module}] 不可重试的错误：{str(e).upper()}"
+                yield exce
