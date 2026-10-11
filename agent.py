@@ -106,7 +106,7 @@ async def chat_loop(agent,user_message,user_id):
         try:                   
             async for message_chunk, metadata in agent.astream(input_data, config=config,stream_mode='messages'):
                 #只返回.content信息
-                if metadata.get("ls_model_name") != "qwen-max":
+                if metadata.get("ls_model_name") != "qwen3.7-plus-2026-05-26":
                     continue
                 text = message_chunk.text
                 if text:
