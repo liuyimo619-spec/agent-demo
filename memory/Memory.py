@@ -2,7 +2,10 @@ from langgraph.prebuilt import ToolRuntime
 from langchain_core.tools import StructuredTool
 from typing import Literal
 from pydantic import BaseModel,Field
-# memory/cold_zone.py
+from sqlalchemy import delete, select
+#导入数据类
+from memory.ORM_SQLAlchemy import User_Preferences,SessionLocal
+from sqlalchemy.dialects.postgresql import insert
 import sys
 import os
 
@@ -17,7 +20,7 @@ def tool_error_handler(error: Exception) -> str:
     logger.error(f"[ERROR] 工具执行异常：{type(error).__name__}: {error}")
 
     # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
-    return f"喜好系统出错，不影响主进程，请明确告知用户（异常：{type(error).__name__} - {str(error)}）"
+    return f"喜好系统当前操作出错，不影响主进程，请明确告知用户（异常：{type(error).__name__} - {str(error)}）"
 
 
 
@@ -32,7 +35,7 @@ class PreferencesInput(BaseModel):
 
 
 #写入用户喜好
-def save_user_preferences(runtime:ToolRuntime,preferences_key:str,preferences:str) -> str:
+async def save_user_preferences(runtime:ToolRuntime,preferences_key:str,preferences:str) -> str:
     """
     保存用户喜好
 
@@ -41,40 +44,35 @@ def save_user_preferences(runtime:ToolRuntime,preferences_key:str,preferences:st
         preferences_key:喜好的类型
         preferences:喜好
     """
+    # 1.从 Agent 状态中获取用户 ID
     user_id = runtime.state.get('user_id')
     if not user_id:
         return "错误：缺少用户 ID"
-    store = runtime.store
-    namespace = ('users',user_id,"preferences")
-    key = "preferences_dict"
-    #判断是否存在用户喜好
-    existing = store.get(namespace,key)
-    if existing:
-        #存在则更新
-        prefs = existing.value
-        if preferences_key in prefs:
-            #如果之前是列表，则追加
-            if isinstance(prefs[preferences_key], list):
-                prefs[preferences_key].append(preferences)
-            else:
-                # 如果之前是单个字符串，转成列表再追加
-                prefs[preferences_key] = [prefs[preferences_key], preferences]
-        else:
-            # 不存在则添加
-            prefs[preferences_key] = [preferences]
-    else:
-        #不存在则创建
-        prefs = {preferences_key:[preferences]}
-    #保存
-    store.put(namespace,key,prefs)
-    return f'已保存用户喜好：{preferences_key} - {preferences}'
+    # 2.构建 PostgreSQL 插入语句
+    stmt = (
+        insert(User_Preferences)
+        .values(
+            user_id=user_id,
+            preference_key=preferences_key,
+            preference_value=preferences,
+        )
+        .on_conflict_do_nothing(
+            index_elements=['user_id', 'preference_key','preference_value'],
+        )
+    )
+    try:
+        # 3.创建短生命周期 Session，并执行事务
+        async with SessionLocal.begin() as session:
+            await session.execute(stmt)
+        return "喜好已保存/存在"
+    except Exception as e:
+        return tool_error_handler(e)
 
 save_user_preferences = StructuredTool.from_function(
-    func=save_user_preferences,
+    coroutine=save_user_preferences,
     name="save_user_preferences",
     description="强制保存用户偏好。调用时，必须同时提供 'preferences_key'（类别）和 'preferences'（具体内容），两者缺一不可。",
-    args_schema=PreferencesInput,
-    handle_tool_errors=tool_error_handler
+    args_schema=PreferencesInput
 )
 
 #删除用户某一个喜好
@@ -82,7 +80,7 @@ class RemovePreferenceInput(BaseModel):
     preferences_key:PreferenceKey = Field(description="【必须提供】用户喜好类型，从以下选择：风格、饮食、住宿、活动、避免、必须体验、氛围、特殊需求")
     value: str = Field(description="【必须提供】要删除的偏好值，如'吃辣'")
 
-def remove_user_preference(runtime:ToolRuntime,preferences_key:str,value:str) -> str:
+async def remove_user_preference(runtime:ToolRuntime,preferences_key:str,value:str) -> str:
     """
     删除用户某项喜好
 
@@ -94,28 +92,25 @@ def remove_user_preference(runtime:ToolRuntime,preferences_key:str,value:str) ->
     user_id = runtime.state.get('user_id')
     if not user_id:
         return "错误：缺少用户 ID"
-    store = runtime.store
-    namespace = ('users',user_id,"preferences")
-    key = "preferences_dict"
-    #判断是否存在用户喜好
-    existing = store.get(namespace,key)
-    if not existing:
-        return '暂未存入该用户的喜好'
-    prefs = existing.value
-    if preferences_key not in prefs:
-        return '该用户未添加该类喜好'
-    if value in prefs[preferences_key]:
-        prefs[preferences_key].remove(value)
-        store.put(namespace,key,prefs)
-        return f'已删除用户喜好：{preferences_key} - {value}'
-    else:
-        return '该用户未添加该喜好'
+    stmt = (
+        delete(User_Preferences)
+        .where(
+            User_Preferences.user_id == user_id,
+            User_Preferences.preference_key == preferences_key,
+            User_Preferences.preference_value == value,
+        )
+    )
+    try:
+        async with SessionLocal.begin() as session:
+            await session.execute(stmt)
+        return "删除成功"
+    except Exception as e:
+        return tool_error_handler(e)
 remove_user_preference = StructuredTool.from_function(
-    func=remove_user_preference,
+    coroutine=remove_user_preference,
     name="remove_user_preference",
     description="强制删除用户某项偏好。调用时，必须同时提供 'preferences_key'（类别）和 'value'（具体内容），两者缺一不可。",
-    args_schema=RemovePreferenceInput,
-    handle_tool_errors=tool_error_handler
+    args_schema=RemovePreferenceInput
 )
 
 
@@ -125,7 +120,7 @@ class GetPreferencesInput(BaseModel):
         default=None,
         description="可选：指定要查询的偏好类别（风格、饮食、住宿、活动、避免、必须体验、氛围、特殊需求）。不传则返回全部。"
     )
-def get_user_preferences(runtime:ToolRuntime,category:str=None)-> str:
+async def get_user_preferences(runtime:ToolRuntime,category:str=None)-> str:
     """
     查询用户喜好
 
@@ -133,34 +128,51 @@ def get_user_preferences(runtime:ToolRuntime,category:str=None)-> str:
         runtime:工具的运行时
         category:可选：指定要查询的偏好类别（风格、饮食、住宿、活动、避免、必须体验、氛围、特殊需求）。不传则返回全部。
     """
-    store = runtime.store
+    # 1.从 Agent 状态中获取用户 ID
     user_id = runtime.state.get('user_id')
     if not user_id:
         return "错误：缺少用户 ID"
-    namespace = ('users',user_id,"preferences")
-    keys = "preferences_dict"
-    existing = store.get(namespace,keys)
-    if not existing:
-        return '暂未存入该用户的喜好'
-    prefs = existing.value
-    if category:
-        if category in prefs:
-            value_list = '、'.join(prefs[category])
-            return  f'用户的喜好：{category}：{value_list}'
-        else:
-            return '该用户未添加该类喜好'
-    else:
-        if prefs:
-            lines = []
-            for key, value in prefs.items():
-                lines.append(f'{key}:{'、'.join(value)}')
-            return '用户全部喜好：\n'+'\n'.join( lines)
-        else:
-            return '该用户未添加任何喜好'
+    # 2.构建 PostgreSQL 查询语句
+    stmt = select(
+        User_Preferences.preference_key,
+        User_Preferences.preference_value,
+    ).where(
+        User_Preferences.user_id == user_id
+    )
+    if category is not None:
+        stmt = stmt.where(
+            User_Preferences.preference_key == category
+        )
+    # 3.按类别和喜好内容排序
+    stmt = stmt.order_by(User_Preferences.preference_key,User_Preferences.preference_value)
+    try:
+       # 4.创建短生命周期 Session，并执行查询
+        async with SessionLocal() as session:
+            result = await session.execute(stmt)
+            rows = result.all()
+        # 5.指定类别
+        if category is not None:
+            if not rows:
+                return "没有用户偏好"
+            value_list = '、'.join(value for key, value in rows)
+            return f'用户偏好：{value_list}'
+        # 6.查询全部
+        if not rows:
+            return "没有用户偏好"
+        # 7.将查询结果按照类别整理
+        prefs = {}
+        for key, value in rows:
+            prefs.setdefault(key, []).append(value)
+        lines = [
+            f'{key}: {"、 ".join(value)}' for key, value in prefs.items()
+        ]
+        return "用户全部喜好：\n" + "\n".join(lines)
+    except Exception as e:
+        return tool_error_handler(e)
+
 get_user_preferences = StructuredTool.from_function(
-    func=get_user_preferences,
+    coroutine=get_user_preferences,
     name="get_user_preferences",
     description="强制查询用户偏好。调用时，可选提供 'category'（类别），不传则返回全部。",
-    args_schema=GetPreferencesInput,
-    handle_tool_errors=tool_error_handler
+    args_schema=GetPreferencesInput
 )
