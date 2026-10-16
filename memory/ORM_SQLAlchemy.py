@@ -1,5 +1,3 @@
-
-
 from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker,AsyncSession
 from sqlalchemy.orm import DeclarativeBase,Mapped,mapped_column
 from datetime import datetime
@@ -67,6 +65,7 @@ class Travel_Plan_Workspace(Base,UserIdPKMixin):
     city: Mapped[str] = mapped_column(String(50),primary_key=True, nullable=False)
     version_no: Mapped[int] = mapped_column(Integer,primary_key=True, nullable=False)
     itinerary: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False,server_default=text("CURRENT_TIMESTAMP + INTERVAL '7 days'"),)
     __table_args__ = (
@@ -88,8 +87,8 @@ class Cold_zone_attractions(Base):
     )
 
 #创建异步Session工厂
-Session = async_sessionmaker(bind=async_engine, class_=AsyncSession,expire_on_commit=False)
+SessionLocal = async_sessionmaker(bind=async_engine, class_=AsyncSession,expire_on_commit=False)
 
 async def get_database():
-    async with Session() as session, session.begin():
+    async with SessionLocal() as session, session.begin():
             yield session

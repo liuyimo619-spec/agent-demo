@@ -2,14 +2,10 @@
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from datetime import datetime, timedelta
-# memory/cold_zone.py
 from pydantic import BaseModel,Field
-import sys
-import os
-
-# 把项目根目录加入 Python 的模块搜索路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from sqlalchemy import func, select
+#导入数据库
+from memory.ORM_SQLAlchemy import Cold_zone_attractions,Cold_Zone_Cities,SessionLocal
 from logger import logger
 
 def tool_error_handler(error: Exception) -> str:
@@ -19,85 +15,61 @@ def tool_error_handler(error: Exception) -> str:
     # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
     return f"冷区系统出错，不影响主进程，请明确告知用户（异常：{type(error).__name__} - {str(error)}）"
 
-class ColdZoneTool(BaseModel):
-    cold_zone: str = Field(description="已去过的城市名称，如'成都'、'杭州'")
-    attraction_name: list[str] = Field(description="已去过的城市中的景点名称列表，如[武侯祠,西湖]")
-
-
-#写入冷区
-def _add_cold_zone(runtime:ToolRuntime,cold_zone:str,attraction_name:list) -> str:
-    '''
-    将城市写入冷区，记录用户已去过该城市。
-    当用户确认旅行计划后调用此工具，将目的地城市名记入冷区，后续一定时间内不会再推荐该城市。
+#读取冷区
+async def _get_cold_zone_raw(runtime:ToolRuntime, city:str|None = None, include_attractions: bool = True,) -> list[str]|str:
+    """
+    查询用户冷区
 
     Args:
-        runtime:工具的运行时
-        cold_zone:已去过的城市名称，如"成都"、"杭州"
-        attraction_name:已去过的城市中的景点名称列表，如[武侯祠、西湖]
-    Return:返回操作是否成功
-    '''
-    user_id = runtime.state.get('user_id')
-    if not user_id:
-        logger.error("缺少用户 ID，冷区写入失败")
-        return "错误：缺少用户 ID,冷区写入失败"
-    store = runtime.store
-    namespace = ('users',user_id,"cold_zone")
-    key = "cold_zone"
-    #判断是否存在冷区
-    existing = store.get(namespace,key)
-    if existing:
-        existing = existing.value
-    else:
-        existing = {}
-    if not isinstance(attraction_name, list):
-        logger.info(" attraction_name 不是列表类型")
-        return "错误： attraction_name 不是列表类型"
-    if cold_zone not in existing:
-        attraction_name = attraction_name
-    else:
-        attraction = existing.get(cold_zone, {}).get('attraction_name')
-        if not attraction:
-            attraction = []
-        attraction.extend(attraction_name)
-        attraction_name = list(dict.fromkeys(attraction))
-    num = {
-        'date':datetime.now().strftime('%Y-%m-%d'),
-        'attraction_name':attraction_name
-    }
-    existing[cold_zone] = num
-    store.put(namespace, key, existing)
-    return f'已更新城市冷区：{cold_zone}'
-
-add_cold_zone = StructuredTool.from_function(
-    func=_add_cold_zone,
-    name="add_cold_zone",
-    description="将城市写入冷区，记录用户已去过该城市。当用户确认旅行计划后调用，传入目的地城市名（如'北京'）和景点（如‘武侯祠’），后续冷却期内不再推荐该城市/景点。",
-    args_schema=ColdZoneTool,
-    handle_tool_errors=tool_error_handler
+        runtime: 工具的运行时
+        city: 可选，指定城市名。不传则返回全部城市的景点
+        include_attractions: 是否包含景点冷区。True（默认）返回城市+景点，
+                            False 只返回城市冷区
+    """
+    try:
+        user_id = runtime.state.get('user_id')
+        if not user_id:
+            logger.error("缺少用户 ID")
+            return "错误：缺少用户 ID"
+        if include_attractions:
+            #构建默认查询语句
+            stmt = select(Cold_zone_attractions.city, Cold_zone_attractions.attraction).where(Cold_zone_attractions.user_id == user_id,Cold_zone_attractions.end_time > func.now())
+            #添加城市条件
+            if city:
+                stmt = stmt.where(Cold_zone_attractions.city == city)
+            #执行查询语句
+            async with SessionLocal() as session:
+                result = await session.execute(stmt)
+                rows  = result.all()
+            if not rows :
+                return "没有冷区数据"
+            prefs = {}
+            for c,a in rows :
+                prefs.setdefault(c, []).append(a)
+            list_str = [f'{cityf}:{", ".join(valuef)}' for cityf, valuef in prefs.items()]
+            return '用户冷区：\n'+'\n'.join(list_str)
+        else:
+            #构建不读取景点查询语句
+            stmt = select(Cold_Zone_Cities.city).where(Cold_Zone_Cities.user_id == user_id,Cold_Zone_Cities.end_time > func.now())
+            if city:
+                stmt = stmt.where(Cold_Zone_Cities.city == city)
+            #执行查询语句
+            async with SessionLocal() as session:
+                result = await session.execute(stmt)
+                cold_zones  = result.scalars().all()
+            if not cold_zones :
+                return '没有冷区数据'
+            return f"用户城市冷区：{'、'.join(cold_zones)}"
+    except Exception as e:
+        return tool_error_handler(e)
+get_cold_zone_raw = StructuredTool.from_function(
+    coroutine=_get_cold_zone_raw,
+    name="get_cold_zone_raw",
+    description="查询用户冷区默认返回全部的城市：[景点],可选择返回指定城市的景点或者只返回城市",
 )
 
-#读取冷区
-def _get_cold_zone_raw(store, user_id: str) -> str:
-    """
-    查询用户冷区（内部函数，接受 store 和 user_id）
-    """
-    if not user_id:
-        logger.error("缺少用户 ID，冷区加载失败")
-        return '错误缺少用户user_id'
-    namespace = ('users',user_id, "cold_zone")
-    key = "cold_zone"
-    existing = store.get(namespace, key)
-    if existing:
-        y = '冷区：\n'
-        for k, v in existing.value.items():
-            attraction_name = v.get('attraction_name')
-            if attraction_name :
-                y += f'{k}:{"、".join(attraction_name)}\n'
-            else:
-                y += f'{k}\n'
-        return '用户' +y+'\n冷区内景点除客户要求外则不准添加进计划表'
-    else:
-        return '用户未添加冷区'
+
+
 
 #清除过期冷区
 def clean_expired_cold_zone(store, user_id: str):

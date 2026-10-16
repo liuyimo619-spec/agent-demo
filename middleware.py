@@ -3,30 +3,10 @@
 
 from langchain_core.messages import AIMessage, ToolMessage
 #导入冷区模块
-from memory.cold_zone import _get_cold_zone_raw,clean_expired_cold_zone
+from memory.cold_zone import clean_expired_cold_zone
 from langchain.agents.middleware import before_model,after_agent
 import asyncio
 from logger import logger
-#添加冷区到提示词
-@before_model
-def inject_cold_zone_middleware(state, runtime):
-    try:
-        if state.get("_cold_zone_injected"):
-            return None
-        user_id = state.get("user_id")
-        if not user_id:
-            logger.error("中间件加载冷区：错误：缺少用户 ID")
-            return None
-        cold_zone = _get_cold_zone_raw(runtime.store, user_id)
-        if cold_zone:
-            return {
-                "system_prompt": state.get("system_prompt", "") + "\n" + cold_zone,
-                "_cold_zone_injected": True
-            }
-    except Exception as e:
-        logger.error(f'冷区无法注入，不影响主流程。{e}')
-    return None
-
 #清除过期冷区
 @after_agent
 async def clean_expired_cold_zone_middleware(state, runtime):

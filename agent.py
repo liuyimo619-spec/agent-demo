@@ -5,8 +5,8 @@ from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import LLMToolSelectorMiddleware
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from fastapi import HTTPException
-
+#导入读取冷区模块
+from memory.cold_zone import get_cold_zone_raw
 
 from errors import identify_module, should_retry
 #导入长期记忆（用户喜好）模块
@@ -15,27 +15,27 @@ from memory.Memory import (
     remove_user_preference,
     save_user_preferences,
 )
-from memory.cold_zone import add_cold_zone
 #导入短期记忆模块
 from memory.plan_manager import (
-    append_plan_version,
     confirm_plan_version,
-    get_all_plan_keys,
+    get_all_plan_id,
     get_city_trip_count,
     get_latest_plan,
-    get_plan_by_key,
-    get_plan_key_by_city,
+    get_plan_summaries,
+    get_plan_id_by_city,
     get_plan_key_by_offset,
-    get_plan_keys_by_city,
+    list_plan_ids_by_city,
+    get_latest_plan_summary,
     list_plan_versions,
+    get_plan_by_plan_id,
+    get_latest_workspace_plan,
+    list_workspace_plans,
     save_plan,
-    update_plan_summary,
+    delete_plan,
 )
 #导入中间件
 from middleware import (
-    clean_expired_cold_zone_middleware,
     fix_orphaned_tool_calls_middleware,
-    inject_cold_zone_middleware,
 )
 from models import model, qwen_sw_f
 from prompts import SYSTEM_PROMPT
@@ -45,7 +45,6 @@ from tools import get_amap_tools, web_search
 class CustomState(AgentState):
     user_id: NotRequired[str]               # 用户ID唯一标识
     current_plan_key: NotRequired[str]       # 当前计划key
-    _cold_zone_injected: NotRequired[bool]   # 是否已注入冷区
 
 #异步运行 agent工厂函数
 async def create_agent_instance(store) -> None:
@@ -56,19 +55,22 @@ async def create_agent_instance(store) -> None:
         save_user_preferences,
         remove_user_preference,
         get_user_preferences,
-        get_all_plan_keys,
-        get_plan_keys_by_city,
-        get_plan_key_by_city,
+        get_all_plan_id,
+        list_plan_ids_by_city,
+        get_plan_id_by_city,
         get_plan_key_by_offset,
         get_city_trip_count,
         get_latest_plan,
         save_plan,
-        get_plan_by_key,
-        update_plan_summary,
-        append_plan_version,
+        get_plan_summaries,
+        get_latest_plan_summary,
+        get_plan_by_plan_id,
+        get_latest_workspace_plan,
+        list_workspace_plans,
+        delete_plan,
         confirm_plan_version,
         list_plan_versions,
-        add_cold_zone,
+        get_cold_zone_raw
     ]
     # 创建工具选择中间件
     tool_selector = LLMToolSelectorMiddleware(
@@ -83,8 +85,6 @@ async def create_agent_instance(store) -> None:
         store=store,
         checkpointer=InMemorySaver(),
         middleware=[
-            inject_cold_zone_middleware,
-            clean_expired_cold_zone_middleware,
             fix_orphaned_tool_calls_middleware,
             tool_selector,
         ],

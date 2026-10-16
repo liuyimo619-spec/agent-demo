@@ -44,35 +44,35 @@ async def save_user_preferences(runtime:ToolRuntime,preferences_key:str,preferen
         preferences_key:喜好的类型
         preferences:喜好
     """
-    # 1.从 Agent 状态中获取用户 ID
-    user_id = runtime.state.get('user_id')
-    if not user_id:
-        return "错误：缺少用户 ID"
-    # 2.构建 PostgreSQL 插入语句
-    stmt = (
-        insert(User_Preferences)
-        .values(
-            user_id=user_id,
-            preference_key=preferences_key,
-            preference_value=preferences,
+    try: 
+        # 1.从 Agent 状态中获取用户 ID
+        user_id = runtime.state.get('user_id')
+        if not user_id:
+            logger.error("缺少用户 ID")
+            return "错误：缺少用户 ID"
+        # 2.构建 PostgreSQL 插入语句
+        stmt = (
+            insert(User_Preferences)
+            .values(
+                user_id=user_id,
+                preference_key=preferences_key,
+                preference_value=preferences,
+            )
+            .on_conflict_do_nothing(
+                index_elements=['user_id', 'preference_key','preference_value'],
+            )
         )
-        .on_conflict_do_nothing(
-            index_elements=['user_id', 'preference_key','preference_value'],
-        )
-    )
-    try:
         # 3.创建短生命周期 Session，并执行事务
         async with SessionLocal.begin() as session:
             await session.execute(stmt)
         return "喜好已保存/存在"
     except Exception as e:
         return tool_error_handler(e)
-
 save_user_preferences = StructuredTool.from_function(
     coroutine=save_user_preferences,
     name="save_user_preferences",
     description="强制保存用户偏好。调用时，必须同时提供 'preferences_key'（类别）和 'preferences'（具体内容），两者缺一不可。",
-    args_schema=PreferencesInput
+    args_schema=PreferencesInput,
 )
 
 #删除用户某一个喜好
@@ -89,18 +89,19 @@ async def remove_user_preference(runtime:ToolRuntime,preferences_key:str,value:s
         preferences_key:用户喜好类型
         preferences:要删除的偏好值，如'吃辣'
     """
-    user_id = runtime.state.get('user_id')
-    if not user_id:
-        return "错误：缺少用户 ID"
-    stmt = (
-        delete(User_Preferences)
-        .where(
-            User_Preferences.user_id == user_id,
-            User_Preferences.preference_key == preferences_key,
-            User_Preferences.preference_value == value,
-        )
-    )
     try:
+        user_id = runtime.state.get('user_id')
+        if not user_id:
+            logger.error("缺少用户 ID")
+            return "错误：缺少用户 ID"
+        stmt = (
+            delete(User_Preferences)
+            .where(
+                User_Preferences.user_id == user_id,
+                User_Preferences.preference_key == preferences_key,
+                User_Preferences.preference_value == value,
+            )
+        )
         async with SessionLocal.begin() as session:
             await session.execute(stmt)
         return "删除成功"
@@ -128,25 +129,27 @@ async def get_user_preferences(runtime:ToolRuntime,category:str=None)-> str:
         runtime:工具的运行时
         category:可选：指定要查询的偏好类别（风格、饮食、住宿、活动、避免、必须体验、氛围、特殊需求）。不传则返回全部。
     """
-    # 1.从 Agent 状态中获取用户 ID
-    user_id = runtime.state.get('user_id')
-    if not user_id:
-        return "错误：缺少用户 ID"
-    # 2.构建 PostgreSQL 查询语句
-    stmt = select(
+    
+    try:
+        # 1.从 Agent 状态中获取用户 ID
+        user_id = runtime.state.get('user_id')
+        if not user_id:
+            logger.error("缺少用户 ID")
+            return "错误：缺少用户 ID"
+        # 2.构建 PostgreSQL 查询语句
+        stmt = select(
         User_Preferences.preference_key,
         User_Preferences.preference_value,
-    ).where(
-        User_Preferences.user_id == user_id
-    )
-    if category is not None:
-        stmt = stmt.where(
-            User_Preferences.preference_key == category
+        ).where(
+            User_Preferences.user_id == user_id
         )
-    # 3.按类别和喜好内容排序
-    stmt = stmt.order_by(User_Preferences.preference_key,User_Preferences.preference_value)
-    try:
-       # 4.创建短生命周期 Session，并执行查询
+        if category is not None:
+            stmt = stmt.where(
+                User_Preferences.preference_key == category
+            )
+        # 3.按类别和喜好内容排序
+        stmt = stmt.order_by(User_Preferences.preference_key,User_Preferences.preference_value)
+        # 4.创建短生命周期 Session，并执行查询
         async with SessionLocal() as session:
             result = await session.execute(stmt)
             rows = result.all()
@@ -168,8 +171,7 @@ async def get_user_preferences(runtime:ToolRuntime,category:str=None)-> str:
         ]
         return "用户全部喜好：\n" + "\n".join(lines)
     except Exception as e:
-        return tool_error_handler(e)
-
+        return tool_error_handler(e)    
 get_user_preferences = StructuredTool.from_function(
     coroutine=get_user_preferences,
     name="get_user_preferences",
