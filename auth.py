@@ -42,6 +42,8 @@ async def login_user(user_id:str,password:str):
                 await session.execute(token_hash)
             return user_id ,token[0]
         raise HTTPException(status_code=401, detail="密码/账户错误")
+    except HTTPException as e:
+        raise
     except Exception as e:
         logger.error(f"登入失败 user_id={user_id}: {e}")
         raise HTTPException (status_code=500, detail='服务器错误')
@@ -58,6 +60,8 @@ async def logout_user(user_id:str,token:str):
             if row.rowcount == 1:
                 return True
         raise HTTPException(status_code=401, detail="令牌无效")
+    except HTTPException as e:
+        raise
     except Exception as e:
         logger.error(f"登出失败 user_id={user_id}: {e}")
         raise HTTPException (status_code=500, detail='服务器错误')
@@ -67,12 +71,15 @@ async def verify_token(user_id:str,token:str):
     try:
         #验证令牌,刷新last_active并返回token 
         token_hash = hash_session_token(token)
-        update_stmt = update(User_sessions).where(User_sessions.user_id == user_id,User_sessions.token == token_hash,User_sessions.end_time > func.now()).values(last_active=func.now()).returning(User_sessions.token)
+        update_stmt = update(User_sessions).where(User_sessions.user_id == user_id,User_sessions.token == token_hash,User_sessions.end_time > func.now()).values(last_active=func.now()).returning(User_sessions.user_id)
         async with SessionLocal.begin() as session:
             row = await session.execute(update_stmt)
-            if row.scalar_one_or_none()  is not None:
-                return True
+            row = row.scalar_one_or_none()
+            if row is not None:
+                return row,token
             raise HTTPException(status_code=401, detail="令牌无效/已过期")
+    except HTTPException as e:
+        raise 
     except Exception as e:
         logger.error(f"令牌验证失败 user_id={user_id}: {e}")
         raise HTTPException (status_code=500, detail='服务器错误')

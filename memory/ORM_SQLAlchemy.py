@@ -19,11 +19,29 @@ class Base(DeclarativeBase):
 class UserIdFKMixin:
     user_id: Mapped[str] = mapped_column(String(64),ForeignKey('users.user_id',ondelete='CASCADE'),nullable=False,)
 
+#供需要user_id的业务表复用
+class UserIdPKMixin:
+    user_id: Mapped[str] = mapped_column(String(64),ForeignKey('users.user_id',ondelete='CASCADE'),nullable=False,primary_key=True)
+
+
 #users表
 class Users(Base,):
     __tablename__ = 'users'
     user_id: Mapped[str] = mapped_column(String(64),primary_key=True,nullable=False,)
     create_time: Mapped[datetime] = mapped_column(DateTime(timezone=True),server_default=func.now(),nullable=False,)
+    password_hash: Mapped[str] = mapped_column(String(128),nullable=False,)
+
+#令牌+内存记忆活跃表
+class User_sessions(Base,UserIdPKMixin):
+    __tablename__ = 'user_sessions'
+    token: Mapped[str] = mapped_column(String(255), primary_key=True,nullable=False,)
+    start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True),server_default=func.now(),nullable=False,)
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP + INTERVAL '7 days'"), nullable=False)
+    last_active: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
+    __table_args__ = (
+        CheckConstraint('end_time > start_time', name='user_sessions_check'),
+    )
 
 #用户旅行计划表
 class Travel_Plans(Base,UserIdFKMixin):
@@ -37,10 +55,6 @@ class Travel_Plans(Base,UserIdFKMixin):
         CheckConstraint('start_time IS NULL OR end_time IS NULL OR end_time >= start_time', name='travel_plans_check'),
         Index('idx_travel_plans_user_id', 'user_id', 'city'),
     )
-
-#供需要user_id的业务表复用
-class UserIdPKMixin:
-    user_id: Mapped[str] = mapped_column(String(64),ForeignKey('users.user_id',ondelete='CASCADE'),nullable=False,primary_key=True)
 
 
 #用户喜好表

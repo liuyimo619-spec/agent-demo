@@ -46,8 +46,10 @@ class CustomState(AgentState):
     user_id: NotRequired[str]               # 用户ID唯一标识
     current_plan_key: NotRequired[str]       # 当前计划key
 
+
+checkpointer = InMemorySaver()
 #异步运行 agent工厂函数
-async def create_agent_instance(store) -> None:
+async def create_agent_instance(store,checkpointer):
     amap_tools = await get_amap_tools()
     tools = [
         *amap_tools,
@@ -74,7 +76,7 @@ async def create_agent_instance(store) -> None:
     ]
     # 创建工具选择中间件
     tool_selector = LLMToolSelectorMiddleware(
-        max_tools=5,
+        max_tools=10,
         model=qwen_sw_f,
         system_prompt="请根据用户问题，选择最相关的旅行规划工具。",
     )
@@ -83,7 +85,7 @@ async def create_agent_instance(store) -> None:
         model=model,
         tools=tools,
         store=store,
-        checkpointer=InMemorySaver(),
+        checkpointer=checkpointer,
         middleware=[
             fix_orphaned_tool_calls_middleware,
             tool_selector,
@@ -98,7 +100,6 @@ async def chat_loop(agent,user_message,user_id):
     config = {"configurable": {"thread_id": user_id}}
     input_data = {"messages": [HumanMessage(content=user_message)],
                           "user_id": user_id,
-                          "current_plan_key": None, # 当前计划key,暂未闭环且不清楚当初为何设计为何烂尾
                         }   
     #异常重试机制
     for attempt in range(3):

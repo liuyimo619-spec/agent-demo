@@ -20,7 +20,7 @@ def tool_error_handler(error: Exception) -> str:
     logger.error(f"[ERROR] 工具执行异常：{type(error).__name__}: {error}")
 
     # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
-    return f"喜好系统当前操作出错，不影响主进程，请明确告知用户（异常：{type(error).__name__} - {str(error)}）"
+    return f"喜好系统当前操作出错，不影响主进程，请明确告知用户（异常：{type(error).__name__} - {str(error)})"
 
 
 
