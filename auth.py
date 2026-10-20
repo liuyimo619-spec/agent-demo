@@ -22,7 +22,7 @@ async def register_user(user_id:str,password:str):
         raise HTTPException(status_code=409, detail="用户已存在")
     except Exception as e:
         logger.error(f"注册失败 user_id={user_id}: {e}")
-        raise HTTPException (status_code=500, detail='服务器错误')
+        raise HTTPException(status_code=500, detail='服务器错误')
 #登入流程
 async def login_user(user_id:str,password:str):
     try:
@@ -46,7 +46,7 @@ async def login_user(user_id:str,password:str):
         raise
     except Exception as e:
         logger.error(f"登入失败 user_id={user_id}: {e}")
-        raise HTTPException (status_code=500, detail='服务器错误')
+        raise HTTPException(status_code=500, detail='服务器错误')
 
 #登出流程
 async def logout_user(user_id:str,token:str):
@@ -64,7 +64,7 @@ async def logout_user(user_id:str,token:str):
         raise
     except Exception as e:
         logger.error(f"登出失败 user_id={user_id}: {e}")
-        raise HTTPException (status_code=500, detail='服务器错误')
+        raise HTTPException(status_code=500, detail='服务器错误')
 
 #令牌验证+last_active刷新
 async def verify_token(user_id:str,token:str):
@@ -82,4 +82,4 @@ async def verify_token(user_id:str,token:str):
         raise 
     except Exception as e:
         logger.error(f"令牌验证失败 user_id={user_id}: {e}")
-        raise HTTPException (status_code=500, detail='服务器错误')
+        raise HTTPException(status_code=500, detail='服务器错误')
