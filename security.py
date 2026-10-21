@@ -1,4 +1,3 @@
-from asyncio.log import logger
 import hashlib
 import secrets
 from argon2 import PasswordHasher

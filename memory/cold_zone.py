@@ -1,8 +1,6 @@
 #添加冷区
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
-from datetime import datetime, timedelta
-from pydantic import BaseModel,Field
 from sqlalchemy import func, select
 #导入数据库
 from memory.ORM_SQLAlchemy import Cold_zone_attractions,Cold_Zone_Cities,SessionLocal
@@ -70,38 +68,5 @@ get_cold_zone_raw = StructuredTool.from_function(
 
 
 
-
-#清除过期冷区
-def clean_expired_cold_zone(store, user_id: str):
-    """
-    清理冷区数据，删除超过lock_years年没有访问过的冷区数据
-    store:传入调用数据库的工具
-    user_id:传入用户user_id
-    """
-    namespace = ('users', user_id, "cold_zone")
-    key = "cold_zone"
-    existing = store.get(namespace, key)
-    if not existing:
-        return "用户未添加冷区"
-    cold_zone = existing.value
-    current_time = datetime.now()
-    lock_years = 3
-    lis = []
-    for city, time in cold_zone.items():
-        date_str = time.get('date')
-        if not date_str:
-            lis.append(city)
-            continue
-        time = datetime.strptime(date_str, '%Y-%m-%d')+timedelta(days=lock_years * 365)
-        if time <= current_time:
-            lis.append(city)
-    if not lis:
-        return "无过期城市"
-    for city in lis:
-        cold_zone.pop(city)
-    store.put(namespace, key, cold_zone)
-    msg = f"已删除过期城市：{','.join(lis)}"
-    logger.info(msg)
-    return msg
 
 

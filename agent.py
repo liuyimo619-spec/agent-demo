@@ -49,7 +49,7 @@ class CustomState(AgentState):
 
 checkpointer = InMemorySaver()
 #异步运行 agent工厂函数
-async def create_agent_instance(store,checkpointer):
+async def create_agent_instance(checkpointer):
     amap_tools = await get_amap_tools()
     tools = [
         *amap_tools,
@@ -84,7 +84,6 @@ async def create_agent_instance(store,checkpointer):
     agent = create_agent(
         model=model,
         tools=tools,
-        store=store,
         checkpointer=checkpointer,
         middleware=[
             fix_orphaned_tool_calls_middleware,

@@ -1,28 +1,8 @@
 # 中间件
-
-
 from langchain_core.messages import AIMessage, ToolMessage
 #导入冷区模块
-from memory.cold_zone import clean_expired_cold_zone
-from langchain.agents.middleware import before_model,after_agent
-import asyncio
+from langchain.agents.middleware import before_model
 from logger import logger
-#清除过期冷区
-@after_agent
-async def clean_expired_cold_zone_middleware(state, runtime):
-    try:
-        user_id = state.get("user_id")
-        if not user_id:
-            logger.error("中间件清理冷区：错误：缺少用户 ID")
-            return None
-        await asyncio.to_thread(
-            clean_expired_cold_zone,
-            runtime.store,
-            user_id
-        )
-    except Exception as e:
-         logger.error(f'冷区无法清除，不影响主流程。')
-    return None
 #消息补全
 @before_model
 def fix_orphaned_tool_calls_middleware(state, runtime):

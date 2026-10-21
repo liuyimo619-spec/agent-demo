@@ -1,4 +1,6 @@
-from sqlalchemy import delete, func, insert, select, update
+import asyncio
+from agent import checkpointer
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from memory.ORM_SQLAlchemy import Users,User_sessions,SessionLocal
 from security import generate_session_token,hash_session_token,verify_password,hash_password
@@ -35,12 +37,12 @@ async def login_user(user_id:str,password:str):
                 raise HTTPException(status_code=401, detail="密码/账户错误")
         if verify_password(password,hashed_password[0]):
             #生成token 和 token_hash
-            token = generate_session_token()
+            token,token_hash = generate_session_token()
             #token_hash 入库
-            token_hash = insert(User_sessions).values(user_id=user_id,token=token[1])
+            token_hash = insert(User_sessions).values(user_id=user_id,token=token_hash)
             async with SessionLocal.begin() as session:
                 await session.execute(token_hash)
-            return user_id ,token[0]
+            return user_id ,token
         raise HTTPException(status_code=401, detail="密码/账户错误")
     except HTTPException as e:
         raise
@@ -83,3 +85,39 @@ async def verify_token(user_id:str,token:str):
     except Exception as e:
         logger.error(f"令牌验证失败 user_id={user_id}: {e}")
         raise HTTPException(status_code=500, detail='服务器错误')
+
+#计算过期内存记忆
+async def count_memory_within_time():
+    try:
+        #查询所有用户
+        stmt = select(User_sessions.user_id).group_by(User_sessions.user_id).having(func.max(User_sessions.last_active) < func.now()-text("INTERVAL '7 days'"))
+        async with SessionLocal() as session:
+            result = await session.execute(stmt)
+            user_ids = result.scalars().all()
+            return user_ids
+    except Exception as e:
+        logger.error(f"计算过期内存记忆失败: {e}")
+        return []
+
+#清理内存记忆函数
+async def cleanup_expired(user_ids:list[str]):
+    try:
+        #删除过时记忆
+        for user_id in user_ids:
+            await checkpointer.adelete_thread(user_id)
+        logger.info(f"清理过期内存数量: {len(user_ids)}")
+    except Exception as e:
+        logger.error(f"清理过期内存记忆失败: {e}")
+
+
+#清理过期内存记忆
+async def cleanup_loop():
+    while True:
+        try:
+            app = await count_memory_within_time()
+            await cleanup_expired(app)  # 查询并清理
+        except Exception as e:
+            logger.error(f"清理过期内存记忆失败: {e}")        
+        await asyncio.sleep(6 * 60 * 60)  # 睡眠 6 小时
+
+

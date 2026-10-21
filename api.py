@@ -1,19 +1,29 @@
+import asyncio
+
 from fastapi import APIRouter, FastAPI, Request,Depends,HTTPException
 from  agent import chat_loop,create_agent_instance,checkpointer
 from contextlib import asynccontextmanager
-from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse,Response
-from auth import register_user,login_user,logout_user,verify_token
+from auth import register_user,login_user,logout_user,verify_token,cleanup_loop
 
 # 生命周期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 初始化数据库
-    with SqliteStore.from_conn_string("./memory/测试.db") as store:
-        # 创建agent 并挂载agent
-        app.state.agent = await create_agent_instance(store,checkpointer)
+    # 创建agent 并挂载agent
+    app.state.agent = await create_agent_instance(checkpointer)
+    # 清理循环
+    app.state.cleanup_task = asyncio.create_task(
+        cleanup_loop()
+    )
+    try:
         yield
+    finally:
+        app.state.cleanup_task.cancel()
+        try:
+            await app.state.cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 
@@ -88,7 +98,8 @@ async def register(request:RegisterRequest):
 #登入请求参数
 @app.post("/Login/")
 async def login(request:RegisterRequest):
-    return await login_user(request.user_id,request.password)#登出
+    return await login_user(request.user_id,request.password)
+#登出
 @get_current_user.post("/Logout/")
 async def logout(id_token:tuple[str,str] = Depends(verifytoken)):
     return await logout_user(id_token[0],id_token[1])

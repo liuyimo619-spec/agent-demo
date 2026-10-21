@@ -1,5 +1,5 @@
-from sqlalchemy import delete, func,select
-from memory.ORM_SQLAlchemy import SessionLocal, Cold_Zone_Cities,Cold_zone_attractions,Travel_Plan_Workspace,async_engine
+from sqlalchemy import delete, func,select, text
+from memory.ORM_SQLAlchemy import SessionLocal, Cold_Zone_Cities,Cold_zone_attractions,Travel_Plan_Workspace,async_engine,User_sessions
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -42,6 +42,8 @@ async def clean_expired_data():
         data_Cold_Zone_Cities = delete(Cold_Zone_Cities).where(Cold_Zone_Cities.end_time < func.now())
         #清理所有用户城市冷区景点过期数据
         data_cold_zone_attraction = delete(Cold_zone_attractions).where(Cold_zone_attractions.end_time < func.now())
+        #清理过期令牌
+        data_user_sessions = delete(User_sessions).where(User_sessions.end_time < func.now(),User_sessions.last_active < func.now() - text("INTERVAL '8 days'"))
         #创建数据库会话并执行删除操作
         async with SessionLocal.begin() as session:
             #先清理工作台数据
@@ -61,6 +63,10 @@ async def clean_expired_data():
             data_cold_zone_attraction = data_cold_zone_attraction.rowcount or 0
             #计算级联删除景点数据
             count = counts - counte
+
+            #删除过期的令牌
+            data_user_sessions = await session.execute(data_user_sessions)
+            data_user_sessions = data_user_sessions.rowcount or 0
             
         success = {
             "status": "success",
@@ -68,14 +74,17 @@ async def clean_expired_data():
             "data_Cold_Zone_Cities":data_Cold_Zone_Cities,
             "data_cold_zone_attraction":data_cold_zone_attraction,
             "count":count,
-            "counts":counts
+            "counts":counts,
+            "data_user_sessions":data_user_sessions
         }
-        cleanup_logger.info(f"清理成功，已删除 {data_workspace} 条工作台数据，{data_Cold_Zone_Cities} 条城市冷区数据 {count} 条级联删除景点数据,{data_cold_zone_attraction} 条城市冷区景点数据,一共删除{counts}条冷区景点数据")
+        cleanup_logger.info(f"清理成功，已删除 {data_workspace} 条工作台数据，{data_Cold_Zone_Cities} 条城市冷区数据 {count} 条级联删除景点数据,{data_cold_zone_attraction} 条城市冷区景点数据,一共删除{counts}条冷区景点数据,{data_user_sessions}条过期令牌数据")
         return success
     except Exception as e:
         cleanup_logger.exception(f"清理失败，事务已回滚或提交失败 Error: {e}")
         raise 
 
+
+# 主程序
 async def main() -> None:
     try:
         result = await clean_expired_data()

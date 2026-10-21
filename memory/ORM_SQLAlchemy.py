@@ -102,7 +102,3 @@ class Cold_zone_attractions(Base):
 
 #创建异步Session工厂
 SessionLocal = async_sessionmaker(bind=async_engine, class_=AsyncSession,expire_on_commit=False)
-
-async def get_database():
-    async with SessionLocal() as session, session.begin():
-            yield session
