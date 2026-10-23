@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, FastAPI, Request,Depends,HTTPException
 from  agent import chat_loop,create_agent_instance,checkpointer
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 from fastapi.responses import StreamingResponse,Response
 from auth import register_user,login_user,logout_user,verify_token,cleanup_loop
 
@@ -68,7 +68,7 @@ async def add_cors_headers(request: Request, call_next):
 
 # 请求参数
 class ChatRequest(BaseModel):
-    message:str   # 用户输入
+    message:str = Field(...,min_length=1,max_length=500,description="用户提示词，必填项，最短为1 最长为500字符")   # 用户输入
 #流式响应接口
 @get_current_user.post("/旅行agent/")
 async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(verifytoken)):

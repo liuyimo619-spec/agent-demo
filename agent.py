@@ -36,6 +36,7 @@ from memory.plan_manager import (
 #导入中间件
 from middleware import (
     fix_orphaned_tool_calls_middleware,
+    trim_history_middleware
 )
 from models import model, qwen_sw_f
 from prompts import SYSTEM_PROMPT
@@ -87,6 +88,7 @@ async def create_agent_instance(checkpointer):
         checkpointer=checkpointer,
         middleware=[
             fix_orphaned_tool_calls_middleware,
+            trim_history_middleware,
             tool_selector,
         ],
         state_schema=CustomState,
@@ -96,7 +98,9 @@ async def create_agent_instance(checkpointer):
 
 #聊天入口+异常重试
 async def chat_loop(agent,user_message,user_id):
-    config = {"configurable": {"thread_id": user_id}}
+    # 配置项
+    #user_id为用户ID，限制最高50步超步，约 11 轮工具往返
+    config = {"configurable": {"thread_id": user_id},"recursion_limit": 50}
     input_data = {"messages": [HumanMessage(content=user_message)],
                           "user_id": user_id,
                         }   
