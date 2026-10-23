@@ -4,8 +4,8 @@ from typing import NotRequired
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import LLMToolSelectorMiddleware
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import InMemorySaver
 #导入读取冷区模块
+from logger import logger
 from memory.cold_zone import get_cold_zone_raw
 
 from errors import identify_module, should_retry
@@ -36,7 +36,8 @@ from memory.plan_manager import (
 #导入中间件
 from middleware import (
     fix_orphaned_tool_calls_middleware,
-    trim_history_middleware
+    trim_history_middleware,
+    tool_call_middleware
 )
 from models import model, qwen_sw_f
 from prompts import SYSTEM_PROMPT
@@ -48,7 +49,6 @@ class CustomState(AgentState):
     current_plan_key: NotRequired[str]       # 当前计划key
 
 
-checkpointer = InMemorySaver()
 #异步运行 agent工厂函数
 async def create_agent_instance(checkpointer):
     amap_tools = await get_amap_tools()
@@ -89,6 +89,7 @@ async def create_agent_instance(checkpointer):
         middleware=[
             fix_orphaned_tool_calls_middleware,
             trim_history_middleware,
+            tool_call_middleware,
             tool_selector,
         ],
         state_schema=CustomState,
@@ -121,11 +122,18 @@ async def chat_loop(agent,user_message,user_id):
             module = identify_module(e)
             # 判断是否可重试
             if should_retry(e):
+                if attempt == 2:
+                    logger.error(f"[{module}] API 连续3次重试失败，请稍后再试...")
+                    yield f'部分功能请求超时，请稍后再试...'
+                    break
                 # 可重试的错误
                 wait = 2 ** (attempt + 1)
-                print(f"[{module}] API 限流或错误，{wait}秒后自动重试...")
+                logger.warning(f"[{module}] API 限流或错误，{wait}秒后自动重试...")
                 await asyncio.sleep(wait)
+                
             else:
                 # 不可重试的错误
                 exce = f"[{module}] 不可重试的错误：{str(e).upper()}"
-                yield exce
+                logger.error(exce)
+                yield f'错误：{e}'
+                break

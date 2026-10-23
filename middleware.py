@@ -1,8 +1,8 @@
 # 中间件
-from langchain_core.messages import AIMessage, ToolMessage,RemoveMessage,trim_messages
+from langchain_core.messages import AIMessage, ToolMessage,RemoveMessage,trim_messages,HumanMessage
 from langchain.agents.middleware import before_model,after_agent
 from logger import logger
-#from agent import checkpointer
+from memory.checkpointer import checkpointer
 
 #消息补全
 #模型调用前处理
@@ -57,21 +57,25 @@ def trim_history_middleware(state, runtime):
         logger.error(f"历史消息截断中间件异常，不影响主流程: {e}")
 
 #内存记忆清除中间件
-#@after_agent
-#async def tool_call_middleware(state, runtime):
-#    try:
-#       messages = state.get("messages", [])
-#       if not messages:
-#           return None
-#       user_id = state.get("user_id")
-#       if not user_id:
-#           logger.error("清除内存记忆: 缺少用户 ID")
-#       #判断工具名称
-#       for msg in reversed(messages):
-#           if isinstance(msg, ToolMessage):
-#               if msg.name == 'confirm_plan_version' and msg.content == '添加成功':
-#                   await checkpointer.adelete_thread(user_id)
-#                   break
-#       return None
-#   except Exception as e:
-#       logger.error(f"清除内存记忆中间件异常，不影响主流程: {e}")
+@after_agent
+async def tool_call_middleware(state, runtime):
+    try:
+       messages = state.get("messages", [])
+       if not messages:
+           logger.error("清除内存记忆: 缺少 messages 实例")
+           return None
+       user_id = state.get("user_id")
+       if not user_id:
+           logger.error("清除内存记忆: 缺少用户 ID")
+           return None
+       #判断工具名称
+       for msg in reversed(messages):
+            if isinstance(msg, ToolMessage):
+               if msg.name == 'confirm_plan_version' and msg.content == '添加成功':
+                   await checkpointer.adelete_thread(user_id)
+                   break
+            if isinstance(msg, HumanMessage):
+               break
+       return None
+    except Exception as e:
+       logger.error(f"清除内存记忆中间件异常，不影响主流程: {e}")

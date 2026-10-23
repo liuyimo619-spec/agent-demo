@@ -1,7 +1,8 @@
 import asyncio
 
 from fastapi import APIRouter, FastAPI, Request,Depends,HTTPException
-from  agent import chat_loop,create_agent_instance,checkpointer
+from  agent import chat_loop,create_agent_instance
+from memory.checkpointer import checkpointer
 from contextlib import asynccontextmanager
 from pydantic import BaseModel,Field
 from fastapi.responses import StreamingResponse,Response

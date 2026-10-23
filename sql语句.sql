@@ -64,6 +64,7 @@ CREATE TABLE travel_plans(
     user_id VARCHAR(64) NOT NULL,
     city VARCHAR(50) NOT NULL,
     itinerary TEXT NOT NULL,
+    summary TEXT,
     start_time TIMESTAMPTZ,
     end_time TIMESTAMPTZ,
 
