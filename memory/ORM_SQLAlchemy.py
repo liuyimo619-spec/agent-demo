@@ -53,6 +53,7 @@ class Travel_Plans(Base,UserIdFKMixin):
     plan_id: Mapped[int] = mapped_column(BigInteger,Identity(always=True),primary_key=True)
     city:Mapped[str] = mapped_column(String(50),nullable=False,)
     itinerary: Mapped[str] = mapped_column(Text,nullable=False,)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True),nullable=True,)
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True),nullable=True,)
     __table_args__ = (

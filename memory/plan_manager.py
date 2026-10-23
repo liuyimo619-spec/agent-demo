@@ -169,7 +169,7 @@ get_city_trip_count = StructuredTool.from_function(
 #查询最新的旅行计划
 async def _get_latest_plan(runtime:ToolRuntime)->str:
     '''
-    查询最新的旅行计划
+    查询最新已定稿的旅行计划
     '''
     try: 
         # 获取用户 ID
@@ -178,12 +178,13 @@ async def _get_latest_plan(runtime:ToolRuntime)->str:
             logger.error("查询最新旅行计划: 缺少用户 ID")
             return '缺少用户 ID'
         # 构建查询语句并执行
-        stmt = select(Travel_Plans.itinerary).where(Travel_Plans.user_id == user_id).order_by(Travel_Plans.plan_id.desc()).limit(1)
+        stmt = select(Travel_Plans.itinerary,Travel_Plans.summary).where(Travel_Plans.user_id == user_id).order_by(Travel_Plans.plan_id.desc()).limit(1)
         async with SessionLocal() as session:
             result = await session.execute(stmt)
-            itinerary = result.scalar()
-        if itinerary is not None:
-            return itinerary
+            row = result.one_or_none()
+        if row is not None:
+            itinerary,summary = row
+            return f'计划表：{itinerary}，历史记忆：{summary}'
         else:
             return "没有旅行计划"
     
@@ -193,13 +194,13 @@ async def _get_latest_plan(runtime:ToolRuntime)->str:
 get_latest_plan = StructuredTool.from_function(
     coroutine=_get_latest_plan,
     name="get_latest_plan",
-    description="查询最新的旅行计划"
+    description="查询最新已定稿的旅行计划"
 )
 
 #通过pan_id查询旅行计划
 async def _get_plan_by_plan_id(runtime:ToolRuntime,plan_id:int)->str:
     '''
-    通过plan_id查询旅行计划
+    通过plan_id查询已定稿的旅行计划和历史记忆
 
     Args:
         runtime:工具的运行时
@@ -213,12 +214,13 @@ async def _get_plan_by_plan_id(runtime:ToolRuntime,plan_id:int)->str:
             logger.error("通过plan_id查询旅行计划: 缺少用户 ID")
             return "缺少用户 ID"
         # 构建查询语句并执行
-        stmt = select(Travel_Plans.itinerary).where(Travel_Plans.plan_id == plan_id,Travel_Plans.user_id == user_id)
+        stmt = select(Travel_Plans.itinerary,Travel_Plans.summary).where(Travel_Plans.plan_id == plan_id,Travel_Plans.user_id == user_id)
         async with SessionLocal() as session:
             result = await session.execute(stmt)
-            itinerary = result.scalar()
-        if itinerary is not None:
-            return itinerary
+            row = result.one_or_none()
+        if row is not None:
+            itinerary,summary = row
+            return f'计划表：{itinerary}，历史记忆：{summary}'
         else:
             return "没有旅行计划"
     except Exception as e:
@@ -226,13 +228,13 @@ async def _get_plan_by_plan_id(runtime:ToolRuntime,plan_id:int)->str:
 get_plan_by_plan_id = StructuredTool.from_function(
     coroutine=_get_plan_by_plan_id,
     name="get_plan_by_plan_id",
-    description="通过plan_id查询旅行计划"
+    description="通过plan_id查询已定稿的旅行计划和历史记忆"
 )
 
 #删除旅行计划
 async def _delete_plan(runtime:ToolRuntime,plan_id:int)->str:
     '''
-    删除旅行计划 需指定plan_id 危险操作请谨慎
+    删除已定稿的旅行计划 需指定plan_id 危险操作请谨慎
 
     Args:
         runtime:工具的运行时
@@ -257,7 +259,7 @@ async def _delete_plan(runtime:ToolRuntime,plan_id:int)->str:
 delete_plan = StructuredTool.from_function(
     coroutine=_delete_plan,
     name="delete_plan",
-    description="删除旅行计划,需指定plan_id 危险操作请谨慎"
+    description="删除已定稿的旅行计划,需指定plan_id 危险操作请谨慎"
 )
 
 
@@ -397,30 +399,36 @@ async def _confirm_plan_version(runtime:ToolRuntime,city:str,version_no:int) -> 
     Return:返回操作结果
     """
     try:
+        version_no = int(version_no)
         #获取用户 ID
         user_id = runtime.state.get('user_id')
         if not user_id:
             logger.error("缺少用户 ID")
             return "错误：缺少用户 ID"
         #构建工作台计划表查询语句
-        stmt_summary = select(Travel_Plan_Workspace.itinerary).where(Travel_Plan_Workspace.user_id == user_id,Travel_Plan_Workspace.city == city,Travel_Plan_Workspace.version_no == version_no)
+        stmt_itinerary = select(Travel_Plan_Workspace.itinerary).where(Travel_Plan_Workspace.user_id == user_id,Travel_Plan_Workspace.city == city,Travel_Plan_Workspace.version_no == version_no)
+        #构建工作台计划表对应的summary查询语句
+        stmt_summary = select(Travel_Plan_Workspace.summary).where(Travel_Plan_Workspace.user_id == user_id,Travel_Plan_Workspace.city == city,Travel_Plan_Workspace.version_no <= version_no).order_by(Travel_Plan_Workspace.version_no.asc())
         #构建工作台计划表删除语句
         stmt_delete = delete(Travel_Plan_Workspace).where(Travel_Plan_Workspace.user_id == user_id,Travel_Plan_Workspace.city == city)
         #构建城市冷区计划表插入语句（这里‘覆写’主键同时表自带触发器（时间））
         stmt_insert_Cold_Cities = pg_insert(Cold_Zone_Cities).values(city=city,user_id=user_id).on_conflict_do_update(index_elements=[Cold_Zone_Cities.user_id,Cold_Zone_Cities.city],set_={"start_time":func.now(),})
         #执行 先查询计划表是否存在，插入计划表，删除工作台计划表，插入/刷新冷区
         async with SessionLocal.begin() as session:
-            itinerary = await session.execute(stmt_summary)
+            itinerary = await session.execute(stmt_itinerary)
             itinerary = itinerary.scalar()
             if itinerary is None:
                 return "没有该版本的计划表"
+            summary = await session.execute(stmt_summary)
+            summary = summary.scalars().all()
+            summary = json.dumps(summary, ensure_ascii=False)
             #构建最终计划表插入语句
-            stmt_insert = insert(Travel_Plans).values(city=city,itinerary=itinerary,user_id=user_id)
+            stmt_insert = insert(Travel_Plans).values(city=city,itinerary=itinerary,user_id=user_id,summary=summary)
             await session.execute(stmt_insert)
             await session.execute(stmt_delete)
             await session.execute(stmt_insert_Cold_Cities)
             #构建城市冷区景点计划表插入语句（这里‘覆写’主键同时表自带触发器（时间））
-            plan_data:Dict[str:Any] = json.loads(itinerary)
+            plan_data:Dict[str,Any] = json.loads(itinerary)
             attractions = list(dict.fromkeys(name.strip() for name in plan_data.get('attractions',[]) if isinstance(name, str) and name.strip()))
             for attraction in attractions:
                 stmt_insert_Cold_Zone_Attractions = pg_insert(Cold_zone_attractions).values(city=city,user_id=user_id,attraction=attraction).on_conflict_do_update(index_elements=[Cold_zone_attractions.user_id,Cold_zone_attractions.city,Cold_zone_attractions.attraction],set_={"start_time":func.now(),})
