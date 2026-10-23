@@ -3,8 +3,12 @@ from sqlalchemy.orm import DeclarativeBase,Mapped,mapped_column
 from datetime import datetime
 from sqlalchemy import BigInteger, CheckConstraint, DateTime,ForeignKey, ForeignKeyConstraint, Identity, Index, Integer,String,func,Text, text
 
+import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 #1.创建异步引擎
-ASYNC_DATABASE_URL = 'postgresql+asyncpg://postgres:123456@localhost:5432/travel_agent_db'
+ASYNC_DATABASE_URL = os.getenv("ASYNC_DATABASE_URL")
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
     pool_size=10,#设置连接池活跃数
