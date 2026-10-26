@@ -7,12 +7,15 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel,Field
 from fastapi.responses import StreamingResponse,Response
 from auth import register_user,login_user,logout_user,verify_token,cleanup_loop
-
+from memory.domain_guard import check_domain,check_domain_guard
+from logger import logger
 # 生命周期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 创建agent 并挂载agent
     app.state.agent = await create_agent_instance(checkpointer)
+    # 创建domain_guard 并挂载domain_guard
+    app.state.agent_instance = await check_domain_guard()
     # 清理循环
     app.state.cleanup_task = asyncio.create_task(
         cleanup_loop()
@@ -73,6 +76,25 @@ class ChatRequest(BaseModel):
 #流式响应接口
 @get_current_user.post("/旅行agent/")
 async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(verifytoken)):
+    # 检测用户输入是否属于旅行规划领域
+    check_domain_guard = app.state.agent_instance
+    check_domain_guard = app.state.agent_instance
+
+    try:
+        async with asyncio.timeout(15):
+            check_result = await check_domain(
+                check_domain_guard, request.message
+            )
+    except TimeoutError:
+        logger.warning("领域守卫检查超时")
+        raise HTTPException(
+            status_code=504,
+            detail="请求超时，请重试",
+        ) 
+    if check_result == "三角形":
+        raise HTTPException(status_code=400, detail='输入内容不属于旅行规划领域')
+    if check_result == "系统错误":
+        raise HTTPException(status_code=500, detail="服务器错误")
     # 获取agent
     agent = app.state.agent
     return StreamingResponse(chat_loop(agent,request.message,user_id[0]),media_type="text/plain")

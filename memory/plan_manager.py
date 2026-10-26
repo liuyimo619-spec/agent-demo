@@ -1,10 +1,11 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from logger import logger
+from decimal import Decimal
 #导入数据类
 from memory.ORM_SQLAlchemy import Travel_Plans,SessionLocal,Travel_Plan_Workspace,Cold_Zone_Cities,Cold_zone_attractions
 import json
@@ -15,24 +16,30 @@ def tool_error_handler(error: Exception) -> str:
 
     # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
     return f"记忆系统出错，不影响主进程，请明确告知用户（异常：{type(error).__name__} - {str(error)})"
+#1.最底层，单个活动
+class Activity(BaseModel):
+    time_slot:Literal["上午", "下午", "晚上"] = Field(description="时间段，只能是 '上午'、'下午'、'晚上'",max_length=2)
+    place:str = Field(description="旅行的景点",max_length=10)
+    meal:str = Field(description="吃饭的地点,若无则填'无'",max_length=15)
+    place_cost:Decimal = Field(description="旅行的景点价格(纯数字),免费则填0",max_digits=7,decimal_places=2)
+    meal_cost:Decimal = Field(description="吃饭的景点价格(纯数字),免费或无需求则填0",max_digits=7,decimal_places=2)
+    transport_cost:Decimal = Field(description="交通花费(纯数字),免费则填0",max_digits=7,decimal_places=2)
+    note:str = Field(description="旅行计划备注")
+#2.中间层，一天的行程
+class DayPlan(BaseModel):
+    day_index: int = Field(description="第几天，如1、2、3", ge=1, le=999)
+    activities: list[Activity] = Field(description="当天的行程安排，按时间顺序排列，如{'上午', '下午', '晚上''}")
+    day_cost:Decimal = Field(default=0.0,description="禁止填写此字段",max_digits=8,decimal_places=2)
+#3.最外层，整个旅行计划（不限天数）
+class PlanData(BaseModel):
+    city:str = Field(description="旅行目的地城市名，如 '北京'、'上海'",max_length=10)
+    days: list[DayPlan] = Field(description="旅行计划表，按日期规划从第一天到最后一天")
+    remarks:str = Field(default='无',description="整体旅行计划特别备注",max_length=50)
+    cost:Decimal = Field(default=0.0,description="禁止填写此字段",decimal_places=2,max_digits=8)
 
 class SavePlanInput(BaseModel):
-    city: str = Field(
-        description="旅行目的地城市名，如 '北京'、'上海'"
-    )
-    plan_data: Dict[str, Any] = Field(
-        description="完整的旅行计划数据，按日期组织。"
-                    "示例格式："
-                    "{'day1': {'上午': '故宫(费用)', '下午': '天坛（费用）','晚上':'长城（费用）'}, "
-                    "'day2': {'上午': '故宫(费用)', '下午': '天坛（费用）','晚上':'长城（费用）'}, "
-                    "'总费用': '500元', "
-                    "'备注': '无',"
-                    "'attractions': ['故宫', '天坛', '长城']}"
-    )
-    summary: Optional[str] = Field(
-        description="必填项，用于提示修改的原因，如 '无' '距离远'  等。如果是初版则填写基础信息如：旅行资金，旅行时间，旅行目的等。"
-    )
-
+    plan_data: PlanData = Field(description="旅行计划数据")
+    summary: str = Field(default='无',description="将上一版修改为这一版的原因，初版则填'无'",max_length=50)
 #查找用户所有的旅行地
 async def _get_all_plan_id(runtime:ToolRuntime)->dict[str,list[int]]|str:
     """
@@ -282,13 +289,12 @@ async def _generate_plan_key(user_id, city)->int:
         return 1
 
 #写入计划表到工作台
-async def _save_plan(runtime: ToolRuntime,city: str,plan_data: Dict[str, Any],summary: Optional[str] = None,):
+async def _save_plan(runtime: ToolRuntime,plan_data: PlanData,summary: Optional[str] = None,):
     """
-    在工作台写入一版计划表
+    旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表并保存到工作台
 
     Args:
         runtime:工具的运行时
-        city:城市名称
         plan_data:计划表数据json格式
         summary:将上一版修改为这版的原因
     Return:返回操作结果
@@ -299,26 +305,30 @@ async def _save_plan(runtime: ToolRuntime,city: str,plan_data: Dict[str, Any],su
         if not user_id:
             logger.error("写入短期记忆： 缺少用户 ID")
             return "错误：缺少用户 ID"
-        attractions = list(dict.fromkeys(name.strip() for name in plan_data.get('attractions',[]) if isinstance(name, str) and name.strip()))
-        if not attractions: 
-            return '计划数据缺少 attractions 景点列表，请补全后重新调用'
+        # 计算总价
+        cost = 0
+        for days in plan_data.days:
+            days_cost = 0
+            for action in days.activities:
+                days_cost += action.place_cost + action.meal_cost + action.transport_cost
+            days.day_cost = days_cost
+            cost += days.day_cost
+        plan_data.cost = cost
         #获取版本号
+        city = plan_data.city
         version_no = await _generate_plan_key(user_id, city)
-        itinerary = json.dumps(plan_data,ensure_ascii=False)
+        itinerary = plan_data.model_dump_json() #将pydantic对象转换为json字符串
         #构建插入语句并执行
         stmt = (insert(Travel_Plan_Workspace).values(user_id=user_id,city=city,version_no=version_no,itinerary=itinerary,summary=summary,))
         async with SessionLocal.begin() as session:
             await session.execute(stmt) 
-        return "计划表已写入"
+        return f"旅行计划：{itinerary}。工作台成功记录计划表"
     except Exception as e:
         return tool_error_handler(e)
 save_plan = StructuredTool.from_function(
     coroutine=_save_plan,
     name="save_plan",
-    description="""写入旅行计划到工作台。
-                接收目的地城市、完整的计划数据（JSON格式）、修改上版的原因。
-                计划数据应包含每日行程（按时间段分组）、预算估算和住宿建议。
-                """,
+    description="旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表并保存到工作台。",
     args_schema=SavePlanInput
 )
 

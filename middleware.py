@@ -1,8 +1,12 @@
 # 中间件
 from langchain_core.messages import AIMessage, ToolMessage,RemoveMessage,trim_messages,HumanMessage
-from langchain.agents.middleware import before_model,after_agent
+from langchain.agents.middleware import before_model,after_agent,wrap_model_call, wrap_tool_call
 from logger import logger
 from memory.checkpointer import checkpointer
+from typing import Annotated
+from pydantic import Field
+from langchain.agents import AgentState
+from langgraph.types import Command
 
 #消息补全
 #模型调用前处理
@@ -79,3 +83,41 @@ async def tool_call_middleware(state, runtime):
        return None
     except Exception as e:
        logger.error(f"清除内存记忆中间件异常，不影响主流程: {e}")
+
+
+#工具选择中间件
+#累计工具名称并去重
+def merge_tool_names(current:list[str],incoming:list[str])->list[str]:
+    #current:当前工具名称列表
+    #incoming:传入的工具名称列表
+    return list(dict.fromkeys(current+incoming))
+
+class ToolSelectionState(AgentState):
+    loaded_tools:Annotated[list[str], merge_tool_names]
+@wrap_model_call(state_schema=ToolSelectionState)
+async def expose_selected_tools(request,handler):
+    #获取已加载的工具名称列表
+    allowed = set(request.state.get('loaded_tools', []))
+    allowed.add('select_tools')  #保证select_tools的详细存在
+    #获取已加载的工具名称列表
+    visible_tools = [item for item in request.tools if item.name in allowed] #这里的 tools 存放的是已经挂载的tool 和 下面 tool 不是一个东西
+    return await handler(request.override(tools=visible_tools))
+
+@wrap_tool_call
+async def auto_load_tool_middleware(request, handler):
+    #查看request.tool内部是否存在工具名称，不存在丢给框架处理
+    if request.tool is None:    #框架会把这次请求的工具名称进行判断是否挂载，如果挂载就会存放到request.tool中
+        return await handler(request)
+    #工具存在时的处理
+    allowed = set(request.state.get('loaded_tools', []))
+    allowed.add('select_tools')    #保证select_tools的详细存在
+    #捕获第一次工具调用，构建toolmessage并将对应工具名称保存在loaded_tools中
+    if request.tool_call['name'] not in allowed:
+        allowed.add(request.tool_call['name']) #添加对应的工具信息
+        #构建返回结果
+        return Command(update={
+            'loaded_tools': [request.tool_call['name']],
+            'messages': [ToolMessage(content='工具调用失败，已修复:'+request.tool_call['name']+'。必须重新调用该工具来完成对应的操作',tool_call_id=request.tool_call['id'],status="error")],
+        }
+        )
+    return await handler(request)

@@ -1,14 +1,18 @@
+from langchain.tools import ToolRuntime,tool
+from langgraph.types import Command
 from logger import logger
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import StructuredTool
+from langchain_core.messages import ToolMessage
 import os
 import asyncio
+from typing import Annotated
+from pydantic import Field
 from dotenv import load_dotenv
 from langchain_linkup import LinkupSearchRetriever
-load_dotenv(override=True)
 import time
 from langchain_mcp_adapters.interceptors import ToolCallInterceptor
-
+load_dotenv(override=True)
 
 # tools.py
 class SharedRateLimitInterceptor(ToolCallInterceptor):
@@ -46,25 +50,6 @@ async def get_amap_tools():
         if tool.name != "maps_ip_location"  # 把不想要的排除掉
     ]
     return filtered_tools
-#本地html创建工具mcp
-async def get_html_tools():
-    '''链接到本地的 mcp-html-sync-server,返回其提供的所有工具'''
-    try:
-        client = MultiServerMCPClient({
-            'html-sync':{
-                'transport':'stdio',
-                'command':'npx',
-                'args':['-y','mcp-html-sync-server'],
-                'env':{
-                    'NODE_ENV':"production"
-                }
-            }
-        })
-        tools = await client.get_tools()
-    except Exception as e:
-        logger.error(f'html-sync无法注入，不影响主流程。或联系管理员处理：{e}')
-        return  []
-    return tools
 
 #工具错误处理
 def tool_error_handler(error: Exception) -> str:
@@ -74,7 +59,7 @@ def tool_error_handler(error: Exception) -> str:
     # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
     return f"该工具出错，暂时无法执行，（异常：{type(error).__name__} - {str(error)}）"
 #联网查询工具
-def web_search(query: str) -> str:
+async def web_search(query: str) -> str:
     '''
     联网查询
 
@@ -95,9 +80,9 @@ def web_search(query: str) -> str:
     )
     # 执行搜索，返回文档列表
     try: 
-        docs = retriever.invoke(query, top_k = 5)
+        docs = await retriever.ainvoke(query, top_k = 5)
     except TypeError:
-        docs = retriever.invoke(query)[:5]
+        docs = await retriever.ainvoke(query)[:5]
     except Exception as e:
         logger.error(f'linkup-search-retriever无法注入，不影响主流程。{e}')
         return "搜索请求失败"
@@ -109,8 +94,34 @@ def web_search(query: str) -> str:
         doce.append(f"来源: {doc.metadata['url']}\n内容: {doc.page_content}")
     return  "\n\n".join( doce)
 web_search = StructuredTool.from_function(
-    func=web_search,
+    coroutine=web_search,
     name="web_search",
     description="使用互联网进行搜索，返回搜索结果。",
-    handle_tool_errors=tool_error_handler
 )
+
+#工具选择工具
+def build_tool_selector(business_tools):
+    available_names = {item.name for item in business_tools}
+    catalog = '\n'.join(
+        f'{item.name}: {item.description}'
+        for item in business_tools
+    )
+    # 工具选择
+    async def select_tools(name:Annotated[list[str],Field(min_length=1)],runtime:ToolRuntime) -> Command|ToolMessage:
+        # 检查工具是否存在
+        invalid = [name for name in name if name not in available_names]
+        if invalid:
+            return ToolMessage(content=f'无效的工具名称：{invalid},请从目录中重新选择',tool_call_id=runtime.tool_call_id,status='error')
+        return Command(update={
+            'loaded_tools': name,
+            'messages': [ToolMessage(content='已加载:'+'、'.join(name)+'。请继续调用工具完成任务',tool_call_id=runtime.tool_call_id)],
+        })
+
+    select_tools = StructuredTool.from_function(
+        coroutine=select_tools,
+        name="select_tools",
+        description=f"选择工具，请从以下工具中选择，请输入工具名称，多个工具请传入工具名称的字符串列表。\n{catalog}",
+    )
+    return select_tools
+
+

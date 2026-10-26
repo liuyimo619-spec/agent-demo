@@ -16,4 +16,5 @@ qwen_sw_f = init_chat_model(
     model="openai:qwen3.8-flash",
     api_key=DASHSCOPE_API_KEY,
     base_url=DASHSCOPE_BASE_URL,
+    temperature=0
 )

@@ -37,11 +37,13 @@ from memory.plan_manager import (
 from middleware import (
     fix_orphaned_tool_calls_middleware,
     trim_history_middleware,
-    tool_call_middleware
+    auto_load_tool_middleware,
+    tool_call_middleware,
+    expose_selected_tools
 )
-from models import model, qwen_sw_f
+from models import model
 from prompts import SYSTEM_PROMPT
-from tools import get_amap_tools, web_search
+from tools import  get_amap_tools, web_search,build_tool_selector
 
 #定义自定义状态
 class CustomState(AgentState):
@@ -75,12 +77,10 @@ async def create_agent_instance(checkpointer):
         list_plan_versions,
         get_cold_zone_raw
     ]
+    selection_tool = build_tool_selector(tools)
+    tools.append(selection_tool)
     # 创建工具选择中间件
-    tool_selector = LLMToolSelectorMiddleware(
-        max_tools=10,
-        model=qwen_sw_f,
-        system_prompt="请根据用户问题，选择最相关的旅行规划工具。",
-    )
+    tool_selector = expose_selected_tools
     # 创建 agent（原文件管理器创建agent）
     agent = create_agent(
         model=model,
@@ -88,8 +88,9 @@ async def create_agent_instance(checkpointer):
         checkpointer=checkpointer,
         middleware=[
             fix_orphaned_tool_calls_middleware,
-            trim_history_middleware,
+            #trim_history_middleware,
             tool_call_middleware,
+            auto_load_tool_middleware,
             tool_selector,
         ],
         state_schema=CustomState,
