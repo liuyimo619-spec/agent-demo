@@ -88,7 +88,7 @@ async def create_agent_instance(checkpointer):
         checkpointer=checkpointer,
         middleware=[
             fix_orphaned_tool_calls_middleware,
-            #trim_history_middleware,
+            trim_history_middleware,
             tool_call_middleware,
             auto_load_tool_middleware,
             tool_selector,

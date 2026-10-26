@@ -39,22 +39,27 @@ def fix_orphaned_tool_calls_middleware(state, runtime):
     return None
 
 
-# 历史消息截断 上限40条 
+# 历史消息截断 上限40条用户历史消息 
 # 模型调用前处理
 @before_model
 def trim_history_middleware(state, runtime):
     try:
         messages = state.get("messages", [])
-        if len(messages) <= 40:
+        human_mgs= 0
+        for message in reversed(messages):
+            if isinstance(message, HumanMessage):
+                human_mgs += 1
+        #获取保存下的消息id
+        if human_mgs <=40:
             return None
-        kept = trim_messages(
-            messages, 
-            max_tokens=40,                          #借 token 参数装条数
-            token_counter=lambda msgs: len(msgs),   #计数器偷换为条数
-            strategy='last',                         #保尾部
-            start_on='human'                        #从用户开始
-        )
-        kept_ids = [msg.id for msg in kept]        #获取保存下的消息id
+        hu_mgs = 0
+        kept_ids = set()
+        for message in reversed(messages):
+            kept_ids.add(message.id)
+            if isinstance(message, HumanMessage):
+                hu_mgs += 1
+            if hu_mgs == 40:
+                break
         removed = [RemoveMessage(id=msg.id) for msg in messages if msg.id not in kept_ids] #指定删除条数
         return {"messages": removed} if removed else None   #返回删除后的消息
     except Exception as e:
@@ -84,7 +89,6 @@ async def tool_call_middleware(state, runtime):
     except Exception as e:
        logger.error(f"清除内存记忆中间件异常，不影响主流程: {e}")
 
-
 #工具选择中间件
 #累计工具名称并去重
 def merge_tool_names(current:list[str],incoming:list[str])->list[str]:
@@ -96,28 +100,34 @@ class ToolSelectionState(AgentState):
     loaded_tools:Annotated[list[str], merge_tool_names]
 @wrap_model_call(state_schema=ToolSelectionState)
 async def expose_selected_tools(request,handler):
-    #获取已加载的工具名称列表
-    allowed = set(request.state.get('loaded_tools', []))
-    allowed.add('select_tools')  #保证select_tools的详细存在
-    #获取已加载的工具名称列表
-    visible_tools = [item for item in request.tools if item.name in allowed] #这里的 tools 存放的是已经挂载的tool 和 下面 tool 不是一个东西
-    return await handler(request.override(tools=visible_tools))
+    try:
+        #获取已加载的工具名称列表
+        allowed = set(request.state.get('loaded_tools', []))
+        allowed.add('select_tools')  #保证select_tools的详细存在
+        #获取已加载的工具名称列表
+        visible_tools = [item for item in request.tools if item.name in allowed] #这里的 tools 存放的是已经挂载的tool 和 下面 tool 不是一个东西
+        return await handler(request.override(tools=visible_tools))
+    except Exception as e:
+        logger.error(f"工具选择中间件异常，仅剩'未注册工具拦截加载中间件'兜底: {e}")
 
 @wrap_tool_call
 async def auto_load_tool_middleware(request, handler):
-    #查看request.tool内部是否存在工具名称，不存在丢给框架处理
-    if request.tool is None:    #框架会把这次请求的工具名称进行判断是否挂载，如果挂载就会存放到request.tool中
+    try:
+        #查看request.tool内部是否存在工具名称，不存在丢给框架处理
+        if request.tool is None:    #框架会把这次请求的工具名称进行判断是否挂载，如果挂载就会存放到request.tool中
+            return await handler(request)
+        #工具存在时的处理
+        allowed = set(request.state.get('loaded_tools', []))
+        allowed.add('select_tools')    #保证select_tools的详细存在
+        #捕获第一次工具调用，构建toolmessage并将对应工具名称保存在loaded_tools中
+        if request.tool_call['name'] not in allowed:
+            allowed.add(request.tool_call['name']) #添加对应的工具信息
+            #构建返回结果
+            return Command(update={
+                'loaded_tools': [request.tool_call['name']],
+                'messages': [ToolMessage(content='工具调用失败，已修复:'+request.tool_call['name']+'。必须重新调用该工具来完成对应的操作',tool_call_id=request.tool_call['id'],status="error")],
+            }
+            )
         return await handler(request)
-    #工具存在时的处理
-    allowed = set(request.state.get('loaded_tools', []))
-    allowed.add('select_tools')    #保证select_tools的详细存在
-    #捕获第一次工具调用，构建toolmessage并将对应工具名称保存在loaded_tools中
-    if request.tool_call['name'] not in allowed:
-        allowed.add(request.tool_call['name']) #添加对应的工具信息
-        #构建返回结果
-        return Command(update={
-            'loaded_tools': [request.tool_call['name']],
-            'messages': [ToolMessage(content='工具调用失败，已修复:'+request.tool_call['name']+'。必须重新调用该工具来完成对应的操作',tool_call_id=request.tool_call['id'],status="error")],
-        }
-        )
-    return await handler(request)
+    except Exception as e:
+        logger.error(f"自动加载工具中间件异常，仅剩'未注册工具拦截加载中间件'兜底: {e}")

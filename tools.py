@@ -13,21 +13,37 @@ from langchain_linkup import LinkupSearchRetriever
 import time
 from langchain_mcp_adapters.interceptors import ToolCallInterceptor
 load_dotenv(override=True)
+#工具错误处理
+def tool_error_handler(error: Exception) -> str:
+    # 1. 记录日志（可选）
+    logger.error(f"[ERROR] 工具执行异常：{type(error).__name__}: {error}")
+
+    # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
+    return f"该工具出错，暂时无法执行，（异常：{type(error).__name__} - {str(error)}）"
 
 # tools.py
+# 限流拦截器
 class SharedRateLimitInterceptor(ToolCallInterceptor):
     _last_call_time = 0  # 类变量，所有实例共享
-
+    _next_allowed_time = 0
+    _lock = asyncio.Lock()   # 锁
+    # 限流拦截器入口
     def __init__(self, calls_per_second: float = 1.0):
         self.min_interval = 1.0 / calls_per_second
-
+    # 拦截器方法
     async def __call__(self, request, handler):
-        now = time.time()
-        wait_time = self.min_interval - (now - SharedRateLimitInterceptor._last_call_time)
+        async with SharedRateLimitInterceptor._lock: # 自动加锁释放锁
+            #获取当前时间刻度尺
+            now = time.time()
+            # 计算这次允许执行的时间点：要么是现在（如果很久没调用了），要么是排期时间
+            exec_time = max(now, SharedRateLimitInterceptor._next_allowed_time)
+            
+            # 更新下一次允许调用的时间点（给后面排队的人发号码牌）
+            SharedRateLimitInterceptor._next_allowed_time = exec_time + self.min_interval
+        wait_time = exec_time - time.time()
         if wait_time > 0:
             logger.info(f"限流等待 {wait_time:.2f} 秒")
             await asyncio.sleep(wait_time)
-        SharedRateLimitInterceptor._last_call_time = time.time()
         return await handler(request)
 #高德mcp
 async def get_amap_tools():
@@ -51,13 +67,6 @@ async def get_amap_tools():
     ]
     return filtered_tools
 
-#工具错误处理
-def tool_error_handler(error: Exception) -> str:
-    # 1. 记录日志（可选）
-    logger.error(f"[ERROR] 工具执行异常：{type(error).__name__}: {error}")
-
-    # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
-    return f"该工具出错，暂时无法执行，（异常：{type(error).__name__} - {str(error)}）"
 #联网查询工具
 async def web_search(query: str) -> str:
     '''
@@ -82,12 +91,10 @@ async def web_search(query: str) -> str:
     try: 
         docs = await retriever.ainvoke(query, top_k = 5)
     except TypeError:
-        docs = await retriever.ainvoke(query)[:5]
+        docs = (await retriever.ainvoke(query))[:5]
     except Exception as e:
-        logger.error(f'linkup-search-retriever无法注入，不影响主流程。{e}')
-        return "搜索请求失败"
+        return tool_error_handler(e)
     if not docs:
-        logger.error("没有找到结果")
         return "没有找到结果"
     doce = []
     for doc in docs:
@@ -108,15 +115,17 @@ def build_tool_selector(business_tools):
     )
     # 工具选择
     async def select_tools(name:Annotated[list[str],Field(min_length=1)],runtime:ToolRuntime) -> Command|ToolMessage:
-        # 检查工具是否存在
-        invalid = [name for name in name if name not in available_names]
-        if invalid:
-            return ToolMessage(content=f'无效的工具名称：{invalid},请从目录中重新选择',tool_call_id=runtime.tool_call_id,status='error')
-        return Command(update={
-            'loaded_tools': name,
-            'messages': [ToolMessage(content='已加载:'+'、'.join(name)+'。请继续调用工具完成任务',tool_call_id=runtime.tool_call_id)],
-        })
-
+        try:
+            # 检查工具是否存在
+            invalid = [name for name in name if name not in available_names]
+            if invalid:
+                return ToolMessage(content=f'无效的工具名称：{invalid},请从目录中重新选择',tool_call_id=runtime.tool_call_id,status='error')
+            return Command(update={
+                'loaded_tools': name,
+                'messages': [ToolMessage(content='已加载:'+'、'.join(name)+'。请继续调用工具完成任务',tool_call_id=runtime.tool_call_id)],
+            })
+        except Exception as e:
+            return tool_error_handler(e)
     select_tools = StructuredTool.from_function(
         coroutine=select_tools,
         name="select_tools",
