@@ -38,11 +38,6 @@ class PreferencesInput(BaseModel):
 async def save_user_preferences(runtime:ToolRuntime,preferences_key:str,preferences:str) -> str:
     """
     保存用户喜好
-
-    Args:
-        runtime:工具的运行时
-        preferences_key:喜好的类型
-        preferences:喜好
     """
     try: 
         # 1.从 Agent 状态中获取用户 ID
@@ -83,11 +78,6 @@ class RemovePreferenceInput(BaseModel):
 async def remove_user_preference(runtime:ToolRuntime,preferences_key:str,value:str) -> str:
     """
     删除用户某项喜好
-
-    Args:
-        runtime:工具的运行时
-        preferences_key:用户喜好类型
-        preferences:要删除的偏好值，如'吃辣'
     """
     try:
         user_id = runtime.state.get('user_id')
@@ -124,10 +114,6 @@ class GetPreferencesInput(BaseModel):
 async def get_user_preferences(runtime:ToolRuntime,category:str=None)-> str:
     """
     查询用户喜好
-
-    Args:
-        runtime:工具的运行时
-        category:可选：指定要查询的偏好类别（风格、饮食、住宿、活动、避免、必须体验、氛围、特殊需求）。不传则返回全部。
     """
     
     try:

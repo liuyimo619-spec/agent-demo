@@ -6,6 +6,8 @@ from sqlalchemy import delete, func, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from logger import logger
 from decimal import Decimal
+from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 #导入数据类
 from memory.ORM_SQLAlchemy import Travel_Plans,SessionLocal,Travel_Plan_Workspace,Cold_Zone_Cities,Cold_zone_attractions
 import json
@@ -34,7 +36,7 @@ class DayPlan(BaseModel):
 class PlanData(BaseModel):
     city:str = Field(description="旅行目的地城市名，如 '北京'、'上海'",max_length=10)
     days: list[DayPlan] = Field(description="旅行计划表，按日期规划从第一天到最后一天")
-    remarks:str = Field(default='无',description="整体旅行计划特别备注",max_length=50)
+    remarks:str = Field(default='无',description="整体旅行计划特别备注（不要超过100字）",max_length=120)
     cost:Decimal = Field(default=0.0,description="禁止填写此字段",decimal_places=2,max_digits=8)
 
 class SavePlanInput(BaseModel):
@@ -119,7 +121,7 @@ async def _get_plan_key_by_offset(runtime:ToolRuntime,offset:int=-1) ->list[int]
 
     Args:
         runtime:工具的运行时
-        offset:偏移量，默认为-1，表示返回最 Cold_zone_time 最新的plan_id
+        offset:偏移量，默认为-1，表示返回最新的plan_id
     Return:返回key/报错信息
     '''
     try:
@@ -291,13 +293,7 @@ async def _generate_plan_key(user_id, city)->int:
 #写入计划表到工作台
 async def _save_plan(runtime: ToolRuntime,plan_data: PlanData,summary: Optional[str] = None,):
     """
-    旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表并保存到工作台
-
-    Args:
-        runtime:工具的运行时
-        plan_data:计划表数据json格式
-        summary:将上一版修改为这版的原因
-    Return:返回操作结果
+    旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表,保存到工作台并发送给用户，禁止复述计划表内容。
     """
     try:
         # 获取用户 ID
@@ -322,13 +318,15 @@ async def _save_plan(runtime: ToolRuntime,plan_data: PlanData,summary: Optional[
         stmt = (insert(Travel_Plan_Workspace).values(user_id=user_id,city=city,version_no=version_no,itinerary=itinerary,summary=summary,))
         async with SessionLocal.begin() as session:
             await session.execute(stmt) 
-        return f"旅行计划：{itinerary}。工作台成功记录计划表"
+        return Command(update={
+            'messages':[ToolMessage(content=f'计划表已保存到工作台并发给用户，该计划表版本号为{version_no}，禁止复述计划表内容。',tool_call_id=runtime.tool_call_id,artifact={'render_type':'plan_card', 'markdown':itinerary})]
+})
     except Exception as e:
         return tool_error_handler(e)
 save_plan = StructuredTool.from_function(
     coroutine=_save_plan,
     name="save_plan",
-    description="旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表并保存到工作台。",
+    description="旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表,保存到工作台并发送给用户，禁止复述计划表内容。",
     args_schema=SavePlanInput
 )
 
@@ -439,7 +437,7 @@ async def _confirm_plan_version(runtime:ToolRuntime,city:str,version_no:int) -> 
             await session.execute(stmt_insert_Cold_Cities)
             #构建城市冷区景点计划表插入语句（这里‘覆写’主键同时表自带触发器（时间））
             plan_data:Dict[str,Any] = json.loads(itinerary)
-            attractions = list(dict.fromkeys(name.strip() for name in plan_data.get('attractions',[]) if isinstance(name, str) and name.strip()))
+            attractions = list(dict.fromkeys(act['place'].strip() for day in plan_data.get('days',[]) for act in day.get('activities',[]) if isinstance(act.get('place'),str) and act['place'].strip()))
             for attraction in attractions:
                 stmt_insert_Cold_Zone_Attractions = pg_insert(Cold_zone_attractions).values(city=city,user_id=user_id,attraction=attraction).on_conflict_do_update(index_elements=[Cold_zone_attractions.user_id,Cold_zone_attractions.city,Cold_zone_attractions.attraction],set_={"start_time":func.now(),})
                 await session.execute(stmt_insert_Cold_Zone_Attractions)

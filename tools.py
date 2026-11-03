@@ -1,4 +1,4 @@
-from langchain.tools import ToolRuntime,tool
+from langchain.tools import ToolRuntime
 from langgraph.types import Command
 from logger import logger
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -6,6 +6,8 @@ from langchain_core.tools import StructuredTool
 from langchain_core.messages import ToolMessage
 import os
 import asyncio
+from mcp.types import CallToolResult
+import json
 from typing import Annotated
 from pydantic import Field
 from dotenv import load_dotenv
@@ -19,7 +21,7 @@ def tool_error_handler(error: Exception) -> str:
     logger.error(f"[ERROR] 工具执行异常：{type(error).__name__}: {error}")
 
     # 2. 返回给 LLM 的友好信息（含异常类型，便于 LLM 理解）
-    return f"该工具出错，暂时无法执行，（异常：{type(error).__name__} - {str(error)}）"
+    return "工具调用失败"
 
 # tools.py
 # 限流拦截器
@@ -45,25 +47,53 @@ class SharedRateLimitInterceptor(ToolCallInterceptor):
             logger.info(f"限流等待 {wait_time:.2f} 秒")
             await asyncio.sleep(wait_time)
         return await handler(request)
+#递归清洗函数
+BLACKLIST = {"tel", "photos", "children", "indoor_map", "adcode",
+              "instruction", "polyline", "tmcs", "steps","photo",
+              "typecode","suggestion","country","province",
+              "city","street","number","level"}
+def recursive_clean(data):
+    if isinstance(data,dict):
+        return{k:recursive_clean(v) for k,v in data.items() if k not in BLACKLIST}
+    elif isinstance(data,list):
+        return[recursive_clean(item) for item in data]
+    return data
+#拦截器实现
+async def slim_data_interceptor(request, handler):
+    data = await handler(request)
+    if isinstance(data,CallToolResult):
+        for block in data.content:
+            try:
+                if block.type == "text":
+                    payload = json.loads(block.text)
+                    payload  = recursive_clean(payload)
+                    block.text= json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            except json.JSONDecodeError as e:
+                tool_error_handler(e)
+            pass
+    return data
+
 #高德mcp
 async def get_amap_tools():
     amap_key = os.getenv("AMAP_KEY")
     if not amap_key:
         logger.error("请传入高德mcp的api_key")
         return []
-    rate_limiter = SharedRateLimitInterceptor(calls_per_second=1)
+    rate_limiter = SharedRateLimitInterceptor(calls_per_second=3)
     client = MultiServerMCPClient({
         "amap_maps":{
             'transport':'sse',
             "url": f"https://mcp.amap.com/sse?key={amap_key}",
         }
-    }, tool_interceptors=[rate_limiter])
+    }, tool_interceptors=[rate_limiter, slim_data_interceptor])
     tools = await client.get_tools()
     for tool in tools:
         tool.handle_tool_error = tool_error_handler
+    unwanted_tools = {"maps_ip_location","maps_bicycling","maps_direction_bicycling","maps_direction_driving",
+        "maps_direction_transit_integrated","maps_schema_navi","maps_schema_take_taxi","maps_schema_personal_map",}
     filtered_tools = [
         tool for tool in tools
-        if tool.name != "maps_ip_location"  # 把不想要的排除掉
+        if tool.name not in unwanted_tools # 从工具列表中移除 unwanted_tools 中的工具
     ]
     return filtered_tools
 

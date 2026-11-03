@@ -1,14 +1,17 @@
 import asyncio
 
-from fastapi import APIRouter, FastAPI, Request,Depends,HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, Request,Depends,HTTPException
 from  agent import chat_loop,create_agent_instance
 from memory.checkpointer import checkpointer
 from contextlib import asynccontextmanager
 from pydantic import BaseModel,Field
-from fastapi.responses import StreamingResponse,Response
+from fastapi.responses import StreamingResponse
 from auth import register_user,login_user,logout_user,verify_token,cleanup_loop
 from memory.domain_guard import check_domain,check_domain_guard
 from logger import logger
+from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
 # 生命周期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,7 +34,7 @@ async def lifespan(app: FastAPI):
 
 
 
-#路由依赖
+#依赖
 async def verifytoken(request: Request):
     request_token = request.headers.get("Authorization")
     if not request_token:
@@ -48,36 +51,18 @@ async def verifytoken(request: Request):
 
 # 创建app
 app = FastAPI(lifespan=lifespan)
-# 创建依赖
-get_current_user =APIRouter(dependencies=[Depends(verifytoken)])
-# 添加跨域中间件
-@app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    if request.method == "OPTIONS":
-        headers = {
-            # 允许所有源访问
-            "Access-Control-Allow-Origin": "*",
-            # 允许所有方法
-            "Access-Control-Allow-Methods": "POST,get,options,delete",
-            # 允许所有请求头
-            "Access-Control-Allow-Headers": "content-type,Authorization,user_id",
-
-        }
-        return Response(status_code=200, headers=headers)
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"# 允许所有源访问
-    return response
-
-
+app.add_middleware(CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],   # 只写你真实用的源
+    allow_methods=["POST", "GET", "OPTIONS", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "user_id"],)
 
 # 请求参数
 class ChatRequest(BaseModel):
     message:str = Field(...,min_length=1,max_length=500,description="用户提示词，必填项，最短为1 最长为500字符")   # 用户输入
 #流式响应接口
-@get_current_user.post("/旅行agent/")
+@app.post("/agent/旅行agent/")
 async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(verifytoken)):
     # 检测用户输入是否属于旅行规划领域
-    check_domain_guard = app.state.agent_instance
     check_domain_guard = app.state.agent_instance
 
     try:
@@ -97,7 +82,11 @@ async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(ver
         raise HTTPException(status_code=500, detail="服务器错误")
     # 获取agent
     agent = app.state.agent
-    return StreamingResponse(chat_loop(agent,request.message,user_id[0]),media_type="text/plain")
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    now = datetime.now()
+    time_str = now.strftime("%Y-%m-%d") + " " + weekdays[now.weekday()]
+    message = f"[当前时间：{time_str}]" + " " + request.message
+    return StreamingResponse(chat_loop(agent,message,user_id[0]),media_type="text/plain")
 
 
 
@@ -123,12 +112,14 @@ async def register(request:RegisterRequest):
 async def login(request:RegisterRequest):
     return await login_user(request.user_id,request.password)
 #登出
-@get_current_user.post("/Logout/")
+@app.post("/agent/Logout/")
 async def logout(id_token:tuple[str,str] = Depends(verifytoken)):
     return await logout_user(id_token[0],id_token[1])
 
 #挂载
-app.include_router(get_current_user,prefix="/agent")
+#app.include_router(prefix="/agent")
+
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app="api:app", host="127.0.0.1", port=8000, reload=True)

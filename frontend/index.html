@@ -74,6 +74,61 @@
     background: #07c160; color: #fff; font-size: 15px; cursor: pointer;
   }
   #send:disabled { background: #a0d8b8; cursor: not-allowed; }
+  /* 计划表卡片：出现在本轮文本之后，比普通气泡更宽 */
+  .row.plan { justify-content: flex-start; }
+  .plan-card {
+    width: min(720px, 88%); background: #fff; border: 1px solid #e3e3e3;
+    border-radius: 14px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,.08);
+    animation: planIn .3s ease-out;
+  }
+  @keyframes planIn {
+    from { opacity: 0; transform: translateY(10px) scale(.98); }
+    to { opacity: 1; transform: none; }
+  }
+  .plan-head {
+    display: flex; justify-content: space-between; align-items: flex-end; gap: 14px;
+    padding: 16px 18px; color: #fff;
+    background: linear-gradient(135deg, #08a85a, #067a42);
+  }
+  .plan-city { font-size: 21px; font-weight: 700; letter-spacing: .5px; }
+  .plan-sub { margin-top: 4px; font-size: 12px; color: rgba(255,255,255,.82); }
+  .plan-total { text-align: right; white-space: nowrap; }
+  .plan-total span { display: block; font-size: 12px; color: rgba(255,255,255,.82); }
+  .plan-total strong { font-size: 25px; line-height: 1.15; }
+  .plan-days { padding: 2px 18px; }
+  .plan-day { padding: 14px 0; border-bottom: 1px dashed #e7e7e7; }
+  .plan-day:last-child { border-bottom: none; }
+  .day-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .day-badge {
+    padding: 2px 8px; border-radius: 999px; background: #e8f7ee;
+    color: #077c46; font-size: 12px; font-weight: 700;
+  }
+  .day-title { font-size: 15px; font-weight: 700; color: #222; }
+  .day-cost { margin-left: auto; color: #077c46; font-size: 13px; font-weight: 600; }
+  .activity { display: flex; gap: 10px; padding: 7px 0; }
+  .slot {
+    flex: 0 0 44px; height: 24px; line-height: 24px; text-align: center;
+    border-radius: 6px; background: #eef4ff; color: #3563c4;
+    font-size: 12px; font-weight: 600;
+  }
+  .slot.slot-pm { background: #fff4e6; color: #b26a00; }
+  .slot.slot-night { background: #f3ecff; color: #6b46c1; }
+  .slot.slot-home { background: #e9f8f0; color: #077c46; }
+  .activity-main { flex: 1; min-width: 0; }
+  .place { font-size: 14px; font-weight: 600; color: #222; }
+  .meta, .note { margin-top: 3px; font-size: 12px; line-height: 1.55; }
+  .meta { color: #777; }
+  .note { color: #999; }
+  .plan-foot {
+    padding: 12px 18px 15px; border-top: 1px solid #eee; background: #fafafa;
+    color: #666; font-size: 12px; line-height: 1.6;
+  }
+  @media (max-width: 640px) {
+    .plan-card { width: 94%; }
+    .plan-head { padding: 14px; }
+    .plan-city { font-size: 18px; }
+    .plan-total strong { font-size: 21px; }
+  }
 </style>
 </head>
 <body>
@@ -94,7 +149,9 @@
 </footer>
 
 <script>
-const BASE = "http://127.0.0.1:8000";
+const BASE = "";
+// 与后端 agent.py 中的 PLAN_CARD_MARKER 保持一致
+const PLAN_CARD_MARKER = "\n\n[[PLAN_CARD]]\n";
 // 聊天路径含中文，直接写百分号编码形式（/agent/旅行agent/），避免任何文件编码问题
 const API = {
   chat:     BASE + "/agent/%E6%97%85%E8%A1%8Cagent/",
@@ -119,6 +176,7 @@ const btnLogout = document.getElementById("btnLogout");
 const authMsg = document.getElementById("authMsg");
 
 let busy = false;
+let inFlight = null; // 当前聊天请求的 AbortController，登出/切号时用于中止
 
 function showAuthMsg(text, isError) {
   authMsg.textContent = text;
@@ -156,9 +214,23 @@ async function postJSON(url, body, withAuth) {
   return data;
 }
 
+// 中止正在进行的聊天请求：避免登出/切号后旧账号的流继续渲染、后端继续空跑
+function abortInFlight() {
+  if (inFlight) {
+    inFlight.abort();
+    inFlight = null;
+  }
+}
+
 function logoutLocal() {
+  abortInFlight();
+  // 聊天区是设备本地的，切换账号必须清空，否则 B 会看到 A 的对话
+  chat.innerHTML = "";
+  busy = false;
   token = "";
+  uid = "";
   localStorage.removeItem("travel_agent_token");
+  localStorage.removeItem("travel_agent_uid");
   setAuthUI(false);
 }
 
@@ -171,6 +243,8 @@ async function doAuth(kind) {
     // 注册/登录成功都返回 [user_id, token] 数组
     const data = await postJSON(kind === "register" ? API.register : API.login,
                                 { user_id: u, password: p }, false);
+    // 账号确实变了才清空聊天区，同账号重新登录不丢记录
+    if (data[0] !== uid) chat.innerHTML = "";
     uid = data[0];
     token = data[1];
     localStorage.setItem("travel_agent_uid", uid);
@@ -208,6 +282,102 @@ function addBubble(role, text) {
   return bubble;
 }
 
+function makeEl(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function formatMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? "");
+  return "¥" + n.toFixed(2).replace(/\.00$/, "");
+}
+
+// 后端发来的 markdown 字段实际是工具生成的 JSON 字符串，这里做两层解析
+function parsePlanPayload(raw) {
+  const event = JSON.parse(raw);
+  let plan = event && event.render_type === "plan_card" ? event.markdown : event;
+  if (typeof plan === "string") plan = JSON.parse(plan);
+  if (!plan || !Array.isArray(plan.days)) throw new Error("计划表格式不正确");
+  return plan;
+}
+
+function addPlanCard(plan) {
+  const days = plan.days.slice().sort((a, b) =>
+    (Number(a.day_index) || 0) - (Number(b.day_index) || 0));
+  const total = plan.cost != null
+    ? plan.cost
+    : days.reduce((sum, d) => sum + Number(d.day_cost || 0), 0);
+
+  const row = makeEl("div", "row plan");
+  const card = makeEl("div", "plan-card");
+
+  const head = makeEl("div", "plan-head");
+  const headLeft = makeEl("div");
+  headLeft.appendChild(makeEl("div", "plan-city", plan.city || "旅行计划"));
+  headLeft.appendChild(makeEl("div", "plan-sub", days.length + " 天行程 · 已保存到工作台"));
+  const headTotal = makeEl("div", "plan-total");
+  headTotal.appendChild(makeEl("span", "", "总费用（不含住宿）"));
+  headTotal.appendChild(makeEl("strong", "", formatMoney(total)));
+  head.appendChild(headLeft);
+  head.appendChild(headTotal);
+  card.appendChild(head);
+
+  const body = makeEl("div", "plan-days");
+  days.forEach((day) => {
+    const section = makeEl("div", "plan-day");
+    const dayHead = makeEl("div", "day-head");
+    dayHead.appendChild(makeEl("span", "day-badge", "D" + (day.day_index ?? "")));
+    dayHead.appendChild(makeEl("span", "day-title", "第 " + (day.day_index ?? "?") + " 天"));
+    dayHead.appendChild(makeEl("span", "day-cost", formatMoney(day.day_cost)));
+    section.appendChild(dayHead);
+
+    (day.activities || []).forEach((act) => {
+      const item = makeEl("div", "activity");
+      const slot = makeEl("span", "slot", act.time_slot || "");
+      if (act.time_slot === "下午") slot.classList.add("slot-pm");
+      if (act.time_slot === "晚上") slot.classList.add("slot-night");
+      item.appendChild(slot);
+
+      const main = makeEl("div", "activity-main");
+      main.appendChild(makeEl("div", "place", act.place || "未命名景点"));
+      const costs = [];
+      if (Number(act.place_cost)) costs.push("门票 " + formatMoney(act.place_cost));
+      if (Number(act.meal_cost)) costs.push("餐饮 " + formatMoney(act.meal_cost));
+      if (Number(act.transport_cost)) costs.push("交通 " + formatMoney(act.transport_cost));
+      const metaParts = [];
+      if (act.meal && act.meal !== "无") metaParts.push("用餐：" + act.meal);
+      metaParts.push(costs.length ? costs.join(" · ") : "无额外费用");
+      main.appendChild(makeEl("div", "meta", metaParts.join(" · ")));
+      if (act.note && act.note !== "无") main.appendChild(makeEl("div", "note", "备注：" + act.note));
+      item.appendChild(main);
+      section.appendChild(item);
+    });
+
+    const hasHome = day.home && day.home !== "无";
+    if (hasHome) {
+      const item = makeEl("div", "activity");
+      item.appendChild(makeEl("span", "slot slot-home", "住宿"));
+      const main = makeEl("div", "activity-main");
+      main.appendChild(makeEl("div", "place", day.home));
+      main.appendChild(makeEl("div", "meta", "住宿费用需自行预订，未计入本表总价"));
+      item.appendChild(main);
+      section.appendChild(item);
+    }
+    body.appendChild(section);
+  });
+  card.appendChild(body);
+
+  if (plan.remarks && plan.remarks !== "无") {
+    card.appendChild(makeEl("div", "plan-foot", "整体备注：" + plan.remarks));
+  }
+  row.appendChild(card);
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+}
+
 async function send() {
   const message = msgInput.value.trim();
   if (!message || busy) return;
@@ -216,6 +386,9 @@ async function send() {
   sendBtn.disabled = true;
   msgInput.value = "";
 
+  const controller = new AbortController();
+  inFlight = controller;
+
   addBubble("user", message);
   // 关键防阶梯设计：AI 气泡元素整轮只创建这一个，
   // 之后每个 chunk 只更新它的 textContent，绝不按 chunk 新建节点
@@ -223,6 +396,24 @@ async function send() {
   aiEl.classList.add("waiting");
 
   let aiText = "";
+  let cardRaw = null;
+  // 文本正常流式显示；一旦遇到计划表标记，后续字节全部归入卡片 JSON
+  const consume = (piece) => {
+    if (cardRaw !== null) {
+      cardRaw += piece;
+      return;
+    }
+    aiText += piece;
+    const at = aiText.indexOf(PLAN_CARD_MARKER);
+    if (at === -1) {
+      aiEl.textContent = aiText;
+      return;
+    }
+    cardRaw = aiText.slice(at + PLAN_CARD_MARKER.length);
+    aiText = aiText.slice(0, at).replace(/\s+$/, "");
+    aiEl.textContent = aiText || "计划表生成中…";
+  };
+
   try {
     const res = await fetch(API.chat, {
       method: "POST",
@@ -232,6 +423,7 @@ async function send() {
         "user_id": uid,
       },
       body: JSON.stringify({ message: message }),
+      signal: controller.signal,
     });
     if (!res.ok) {
       let detail = "HTTP " + res.status;
@@ -246,15 +438,33 @@ async function send() {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      aiEl.classList.remove("waiting");
       // stream:true 保证跨 chunk 截断的多字节汉字不会变乱码
-      aiText += decoder.decode(value, { stream: true });
-      aiEl.textContent = aiText;
+      const piece = decoder.decode(value, { stream: true });
+      if (!piece) continue;
+      aiEl.classList.remove("waiting");
+      consume(piece);
       chat.scrollTop = chat.scrollHeight;
     }
-    aiText += decoder.decode(); // 冲刷解码器里残余的字节
-    aiEl.textContent = aiText || "[后端返回了空内容]";
+    const tail = decoder.decode();
+    if (tail) consume(tail); // 冲刷解码器里残余的字节
+    aiEl.classList.remove("waiting");
+
+    if (cardRaw !== null) {
+      try {
+        const plan = parsePlanPayload(cardRaw.trim());
+        if (!aiText) aiEl.parentElement.remove(); // 没有正文时只显示卡片
+        addPlanCard(plan);
+      } catch (err) {
+        console.error("计划表解析失败", err, cardRaw);
+        aiEl.textContent = (aiText ? aiText + "\n\n" : "") + "[计划表解析失败]";
+        aiEl.classList.add("error");
+      }
+    } else {
+      aiEl.textContent = aiText || "[后端返回了空内容]";
+    }
   } catch (e) {
+    // 主动中止（登出/切号/页面卸载）：不展示错误，气泡已随聊天区一起清掉
+    if (e.name === "AbortError") return;
     aiEl.classList.remove("waiting");
     aiEl.classList.add("error");
     aiEl.textContent = (aiText ? aiText + "\n\n" : "") + "[请求失败] " + e.message;
@@ -264,6 +474,7 @@ async function send() {
       showAuthMsg("登录已过期，请重新登录", true);
     }
   } finally {
+    if (inFlight === controller) inFlight = null;
     busy = false;
     sendBtn.disabled = !token;
     msgInput.focus();
