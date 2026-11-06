@@ -7,11 +7,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from logger import logger
 from decimal import Decimal
 from langgraph.types import Command
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage,HumanMessage,AIMessage
 #导入数据类
 from memory.ORM_SQLAlchemy import Travel_Plans,SessionLocal,Travel_Plan_Workspace,Cold_Zone_Cities,Cold_zone_attractions
 import json
-
+from memory.domain_guard import run_plan_critic
 def tool_error_handler(error: Exception) -> str:
     # 1. 记录日志（可选）
     logger.error(f"[ERROR] 工具执行异常：{type(error).__name__}: {error}")
@@ -21,7 +21,7 @@ def tool_error_handler(error: Exception) -> str:
 #1.最底层，单个活动
 class Activity(BaseModel):
     time_slot:Literal["上午", "下午", "晚上"] = Field(description="时间段，只能是 '上午'、'下午'、'晚上'",max_length=2)
-    place:str = Field(description="旅行的景点",max_length=10)
+    place:str = Field(description="旅行的景点",max_length=20)
     meal:str = Field(description="吃饭的地点,若无则填'无'",max_length=15)
     place_cost:Decimal = Field(description="旅行的景点价格(纯数字),免费则填0",max_digits=7,decimal_places=2)
     meal_cost:Decimal = Field(description="吃饭的景点价格(纯数字),免费或无需求则填0",max_digits=7,decimal_places=2)
@@ -30,14 +30,15 @@ class Activity(BaseModel):
 #2.中间层，一天的行程
 class DayPlan(BaseModel):
     day_index: int = Field(description="第几天，如1、2、3", ge=1, le=999)
+    day_of_week: Literal["周一", "周二", "周三", "周四", "周五", "周六", "周日"] = Field(description="当天对应的星期。必须从枚举值中选择。")
     activities: list[Activity] = Field(description="当天的行程安排，按时间顺序排列，如{'上午', '下午', '晚上''}")
-    day_cost:Decimal = Field(default=0.0,description="禁止填写此字段",max_digits=8,decimal_places=2)
+    day_cost:Decimal = Field(default=0,description="禁止填写此字段",max_digits=8,decimal_places=2)
 #3.最外层，整个旅行计划（不限天数）
 class PlanData(BaseModel):
     city:str = Field(description="旅行目的地城市名，如 '北京'、'上海'",max_length=10)
     days: list[DayPlan] = Field(description="旅行计划表，按日期规划从第一天到最后一天")
     remarks:str = Field(default='无',description="整体旅行计划特别备注（不要超过100字）",max_length=120)
-    cost:Decimal = Field(default=0.0,description="禁止填写此字段",decimal_places=2,max_digits=8)
+    cost:Decimal = Field(default=0,description="禁止填写此字段",decimal_places=2,max_digits=8)
 
 class SavePlanInput(BaseModel):
     plan_data: PlanData = Field(description="旅行计划数据")
@@ -301,26 +302,61 @@ async def _save_plan(runtime: ToolRuntime,plan_data: PlanData,summary: Optional[
         if not user_id:
             logger.error("写入短期记忆： 缺少用户 ID")
             return "错误：缺少用户 ID"
-        # 计算总价
-        cost = 0
-        for days in plan_data.days:
-            days_cost = 0
-            for action in days.activities:
-                days_cost += action.place_cost + action.meal_cost + action.transport_cost
-            days.day_cost = days_cost
-            cost += days.day_cost
-        plan_data.cost = cost
-        #获取版本号
-        city = plan_data.city
-        version_no = await _generate_plan_key(user_id, city)
-        itinerary = plan_data.model_dump_json() #将pydantic对象转换为json字符串
-        #构建插入语句并执行
-        stmt = (insert(Travel_Plan_Workspace).values(user_id=user_id,city=city,version_no=version_no,itinerary=itinerary,summary=summary,))
-        async with SessionLocal.begin() as session:
-            await session.execute(stmt) 
-        return Command(update={
-            'messages':[ToolMessage(content=f'计划表已保存到工作台并发给用户，该计划表版本号为{version_no}，禁止复述计划表内容。',tool_call_id=runtime.tool_call_id,artifact={'render_type':'plan_card', 'markdown':itinerary})]
-})
+        # 检查计划表
+        name_opentime_list = ""
+        human_message = ""
+        for messages in reversed(runtime.state.get('messages',[])):
+            if isinstance(messages,ToolMessage) and messages.name == "maps_search_detail":
+                content = messages.content
+                if isinstance(content,str):
+                    text = content
+                elif isinstance(content, list) and content and isinstance(content[0], dict):
+                    text = content[0].get("text", "")
+                else:
+                    continue
+                try:
+                    detail = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                place_name = detail.get("name", "")
+                opentime2 = detail.get("opentime2", "")
+                name_opentime = f"{place_name}:{opentime2}"
+                name_opentime_list += name_opentime + "\n"
+            if isinstance(messages,HumanMessage):
+                human_message += messages.content +'\n'
+        aimessage = f'计划表：{plan_data.model_dump_json()}材料：{name_opentime_list}'
+        #构建对话
+        att_na_op = [
+            AIMessage(content=aimessage),
+            HumanMessage(content=human_message),
+        ]
+        verdict = await run_plan_critic(att_na_op)
+        if verdict.decision == '合理':
+            # 计算总价
+            cost = 0
+            for days in plan_data.days:
+                days_cost = 0
+                for action in days.activities:
+                    days_cost += action.place_cost + action.meal_cost + action.transport_cost
+                days.day_cost = days_cost
+                cost += days.day_cost
+            plan_data.cost = cost
+            #获取版本号
+            city = plan_data.city
+            version_no = await _generate_plan_key(user_id, city)
+            itinerary = plan_data.model_dump_json() #将pydantic对象转换为json字符串
+            #构建插入语句并执行
+            stmt = (insert(Travel_Plan_Workspace).values(user_id=user_id,city=city,version_no=version_no,itinerary=itinerary,summary=summary,))
+            async with SessionLocal.begin() as session:
+                await session.execute(stmt) 
+            return Command(update={
+                'messages':[ToolMessage(content=f'计划表已保存到工作台并发给用户，该计划表版本号为{version_no}，禁止复述计划表内容。',tool_call_id=runtime.tool_call_id,artifact={'render_type':'plan_card', 'markdown':itinerary})]
+            })
+        else:
+            return Command(update={
+                            'messages':[ToolMessage(content=f'{verdict.reason},计划表不合理，拒绝入库拒绝发送给客户',status="error",tool_call_id=runtime.tool_call_id)]
+                        })
+        
     except Exception as e:
         return tool_error_handler(e)
 save_plan = StructuredTool.from_function(
@@ -502,7 +538,7 @@ async def _get_latest_workspace_plan(runtime:ToolRuntime,details:bool = False) -
             return "错误：缺少用户 ID"
         #构建查询语句并执行
         stmt = select(Travel_Plan_Workspace.itinerary, Travel_Plan_Workspace.version_no,Travel_Plan_Workspace.city).where(
-            Travel_Plan_Workspace.user_id == user_id,Travel_Plan_Workspace.end_time > func.now(), 
+            Travel_Plan_Workspace.user_id == user_id,Travel_Plan_Workspace.end_time > func.now(),
         ).order_by(Travel_Plan_Workspace.start_time.desc()).limit(1)
         async with SessionLocal() as session:
             result = await session.execute(stmt)

@@ -18,7 +18,8 @@ qwen_sw_f = init_chat_model(
     model=f"openai:{DASHSCOPE_MODELx_ID}",
     api_key=DASHSCOPE_API_KEY,
     base_url=DASHSCOPE_BASE_URL,
-    temperature=0
+    temperature=0,
+    extra_body={"enable_thinking": False},
 )
 #初始化无思考模型
 model_no_think = init_chat_model(

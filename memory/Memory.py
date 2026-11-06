@@ -107,7 +107,7 @@ remove_user_preference = StructuredTool.from_function(
 
 #查询用户喜好
 class GetPreferencesInput(BaseModel):
-    category: str = Field(
+    category: str|None = Field(
         default=None,
         description="可选：指定要查询的偏好类别（风格、饮食、住宿、活动、避免、必须体验、氛围、特殊需求）。不传则返回全部。"
     )

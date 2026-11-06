@@ -2,8 +2,8 @@
 from dataclasses import replace
 from datetime import datetime
 
-from langchain_core.messages import AIMessage, ToolMessage,RemoveMessage,HumanMessage,SystemMessage
-from langchain.agents.middleware import before_model,after_agent,wrap_model_call, wrap_tool_call,after_model,dynamic_prompt
+from langchain_core.messages import AIMessage, ToolMessage,RemoveMessage,HumanMessage
+from langchain.agents.middleware import before_model,after_agent,wrap_model_call, wrap_tool_call,dynamic_prompt
 from logger import logger
 from memory.checkpointer import checkpointer
 from typing import Annotated
@@ -57,7 +57,7 @@ def trim_history_middleware(state, runtime):
     try:
         messages = state.get("messages", [])
         human_mgs= 0
-        for message in reversed(messages):
+        for message in messages:
             if isinstance(message, HumanMessage):
                 human_mgs += 1
         #获取保存下的消息id
@@ -240,7 +240,3 @@ async def inject_step_warning_middleware(request):
     except Exception as e:
             logger.error(f"超步限制中间件异常，超步上限可能失效: {e}")
             return None
-
-
-
-        

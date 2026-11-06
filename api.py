@@ -63,12 +63,12 @@ class ChatRequest(BaseModel):
 @app.post("/agent/旅行agent/")
 async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(verifytoken)):
     # 检测用户输入是否属于旅行规划领域
-    check_domain_guard = app.state.agent_instance
+    domain_guard_agent = app.state.agent_instance
 
     try:
         async with asyncio.timeout(15):
             check_result = await check_domain(
-                check_domain_guard, request.message
+                domain_guard_agent, request.message
             )
     except TimeoutError:
         logger.warning("领域守卫检查超时")
@@ -100,8 +100,8 @@ async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(ver
 
 #注册请求参数
 class RegisterRequest(BaseModel):
-    user_id:str
-    password:str
+    user_id:str = Field(...,min_length=1,max_length=20,description="用户名，必填项，最短为1 最长为20字符")
+    password:str = Field(...,min_length=6,max_length=20,description="密码，必填项，最短为6 最长为20字符")
 #注册
 @app.post("/Register/")
 async def register(request:RegisterRequest):
@@ -115,9 +115,6 @@ async def login(request:RegisterRequest):
 @app.post("/agent/Logout/")
 async def logout(id_token:tuple[str,str] = Depends(verifytoken)):
     return await logout_user(id_token[0],id_token[1])
-
-#挂载
-#app.include_router(prefix="/agent")
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 if __name__ == "__main__":

@@ -53,7 +53,8 @@ def should_retry(e):
         "rate_limit",
         "timeout",
         "connection",
-        "engine_response_data_error"
+        "engine_response_data_error",
+        "timed out"
     ]
     if any(k in err_str for k in retryable):
         return True

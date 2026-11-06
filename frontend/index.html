@@ -75,7 +75,24 @@
   }
   #send:disabled { background: #a0d8b8; cursor: not-allowed; }
   /* 计划表卡片：出现在本轮文本之后，比普通气泡更宽 */
-  .row.plan { justify-content: flex-start; }
+  .row.plan {
+    justify-content: flex-start; flex-direction: column;
+    align-items: flex-start; gap: 10px;
+  }
+  /* 价格免责提示：计划卡上方的醒目条 */
+  .price-notice {
+    width: min(720px, 88%);
+    padding: 12px 16px;
+    border-radius: 10px;
+    background: #fff3cd;
+    border: 1px solid #f0b429;
+    border-left: 6px solid #e6a23c;
+    color: #8a5300;
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: .5px;
+    box-shadow: 0 4px 12px rgba(230, 162, 60, .18);
+  }
   .plan-card {
     width: min(720px, 88%); background: #fff; border: 1px solid #e3e3e3;
     border-radius: 14px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,.08);
@@ -125,6 +142,7 @@
   }
   @media (max-width: 640px) {
     .plan-card { width: 94%; }
+    .price-notice { width: 94%; font-size: 15px; }
     .plan-head { padding: 14px; }
     .plan-city { font-size: 18px; }
     .plan-total strong { font-size: 21px; }
@@ -196,6 +214,30 @@ function setAuthUI(loggedIn) {
   msgInput.placeholder = loggedIn ? "输入消息，Enter 发送" : "先登录，然后输入消息，Enter 发送";
 }
 
+function formatApiError(detail, status) {
+  if (typeof detail === "string" && detail) return detail;
+  if (!Array.isArray(detail) || !detail.length) return "HTTP " + status;
+
+  const fields = { user_id: "用户名", password: "密码", message: "消息" };
+  return detail.map(error => {
+    const field = fields[error.loc?.at(-1)] || "请求参数";
+    switch (error.type) {
+      case "string_too_short":
+        return field + "至少需要 " + error.ctx.min_length + " 个字符";
+      case "string_too_long":
+        return field + "最多允许 " + error.ctx.max_length + " 个字符";
+      case "missing":
+        return field + "不能为空";
+      case "string_type":
+        return field + "必须是文本";
+      case "json_invalid":
+        return "请求数据格式错误，请刷新页面后重试";
+      default:
+        return field + "格式不正确（" + error.type + "）";
+    }
+  }).join("；");
+}
+
 // 统一请求封装：非 2xx 时把 FastAPI 的 {detail} 提出来当错误信息
 async function postJSON(url, body, withAuth) {
   const headers = { "Content-Type": "application/json" };
@@ -207,7 +249,7 @@ async function postJSON(url, body, withAuth) {
   let data = null;
   try { data = await res.json(); } catch (_) {}
   if (!res.ok) {
-    const err = new Error(data && data.detail ? data.detail : "HTTP " + res.status);
+    const err = new Error(formatApiError(data?.detail, res.status));
     err.status = res.status;
     throw err;
   }
@@ -373,6 +415,7 @@ function addPlanCard(plan) {
   if (plan.remarks && plan.remarks !== "无") {
     card.appendChild(makeEl("div", "plan-foot", "整体备注：" + plan.remarks));
   }
+  row.appendChild(makeEl("div", "price-notice", "实际价格以现场为准"));
   row.appendChild(card);
   chat.appendChild(row);
   chat.scrollTop = chat.scrollHeight;
@@ -426,9 +469,9 @@ async function send() {
       signal: controller.signal,
     });
     if (!res.ok) {
-      let detail = "HTTP " + res.status;
-      try { detail = (await res.json()).detail || detail; } catch (_) {}
-      const err = new Error(detail);
+      let data = null;
+      try { data = await res.json(); } catch (_) {}
+      const err = new Error(formatApiError(data?.detail, res.status));
       err.status = res.status;
       throw err;
     }
