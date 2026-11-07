@@ -19,6 +19,8 @@ HARD_LIMIT_STEP = 52      # 硬熔断线：强制结束进程
 TOOL_LIMIT = {"maps_geo": 6,"maps_text_search": 8,"maps_around_search": 4,
               "maps_direction_walking": 4,"maps_distance": 3,"maps_search_detail": 4,"maps_weather": 2,
 }
+_SENTINELS = {"none", "null", "无", "未指定"}
+_CLEAN_PARAMS = {"city", "category"} 
 #消息补全
 #模型调用前处理
 @before_model
@@ -168,6 +170,23 @@ def merge_tool_counts(current,incoming):
 @wrap_tool_call
 async def auto_load_tool_middleware(request, handler):
     try:
+        #--------None默认值替换---------
+        try:
+            args = request.tool_call.get('args',{})
+            if isinstance(args,dict):
+                cleaned,dropped = {},[]
+                for k,v in args.items():
+                    if k in _CLEAN_PARAMS and isinstance(v,str) and v.strip().lower() in _SENTINELS:
+                        dropped.append(k)
+                        continue
+                    cleaned[k] = v
+                if dropped:
+                    logger.warning(
+                        f"工具入参清洗: {request.tool_call.get('name')} 删除哨兵参数 {dropped}"
+                    )
+                    request = request.override(tool_call={**request.tool_call, "args": cleaned})
+        except Exception as e:
+            logger.error(f"None默认值替换中间件异常: {e}")
         #--------超步限制中间件---------
         step_count = request.state.get("step_count") or 0
         if step_count >= HARD_LIMIT_STEP:
@@ -185,6 +204,7 @@ async def auto_load_tool_middleware(request, handler):
         if request.tool_call['name'] not in allowed:
             just_loaded = [request.tool_call['name']] #添加对应的工具信息
             logger.info(f"未加载直接执行: {request.tool_call['name']}") #记入日志
+        
         #--------工具调用上限检测---------
         name = request.tool_call['name']
         counts = request.state.get('tool_counts',{})
@@ -200,7 +220,8 @@ async def auto_load_tool_middleware(request, handler):
             delta["loaded_tools"] = just_loaded
         if isinstance(result,Command): # 判断类型
             return replace(result, update={**(result.update or {}), **delta}) #因为Command是替换不是修改，所以要先拿出进行修改再进行update
-        return Command(update={"messages": [result], **delta}) #将
+        
+        return Command(update={"messages": [result], **delta}) 
     except Exception as e:
         logger.error(f"自动加载工具中间件异常，仅剩'工具选择中间件+工具'兜底: {e}")
         return Command(update={"messages": [ToolMessage(content='工具调用失败此工具禁止再调用',status="error",tool_call_id=request.tool_call['id'])]})

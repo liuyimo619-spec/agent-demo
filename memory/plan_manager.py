@@ -32,13 +32,13 @@ class DayPlan(BaseModel):
     day_index: int = Field(description="第几天，如1、2、3", ge=1, le=999)
     day_of_week: Literal["周一", "周二", "周三", "周四", "周五", "周六", "周日"] = Field(description="当天对应的星期。必须从枚举值中选择。")
     activities: list[Activity] = Field(description="当天的行程安排，按时间顺序排列，如{'上午', '下午', '晚上''}")
-    day_cost:Decimal = Field(default=0,description="禁止填写此字段",max_digits=8,decimal_places=2)
+    day_cost:Decimal = Field(Decimal("0"),description="禁止填写此字段",max_digits=8,decimal_places=2)
 #3.最外层，整个旅行计划（不限天数）
 class PlanData(BaseModel):
     city:str = Field(description="旅行目的地城市名，如 '北京'、'上海'",max_length=10)
     days: list[DayPlan] = Field(description="旅行计划表，按日期规划从第一天到最后一天")
     remarks:str = Field(default='无',description="整体旅行计划特别备注（不要超过100字）",max_length=120)
-    cost:Decimal = Field(default=0,description="禁止填写此字段",decimal_places=2,max_digits=8)
+    cost:Decimal = Field(Decimal("0"),description="禁止填写此字段",decimal_places=2,max_digits=8)
 
 class SavePlanInput(BaseModel):
     plan_data: PlanData = Field(description="旅行计划数据")
@@ -331,7 +331,11 @@ async def _save_plan(runtime: ToolRuntime,plan_data: PlanData,summary: Optional[
             HumanMessage(content=human_message),
         ]
         verdict = await run_plan_critic(att_na_op)
-        if verdict.decision == '合理':
+        if verdict == '系统错误':
+            return Command(update={
+                            'messages':[ToolMessage(content=f'计划表评判员异常，本次计划未保存，请明确告知用户。',status="error",tool_call_id=runtime.tool_call_id)]
+                        })            
+        elif verdict.decision == '合理':
             # 计算总价
             cost = 0
             for days in plan_data.days:

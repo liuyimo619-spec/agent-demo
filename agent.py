@@ -139,7 +139,6 @@ async def chat_loop(agent,user_message,user_id):
                         # 看门狗
                         item = await asyncio.wait_for(anext(stream), CHAT_IDLE_TIMEOUT)
                     except StopAsyncIteration:  # 迭代完成
-                        logger.error(f'看门狗超时')
                         break
                     #使用开门狗后拿到的数据（源数据已被开门狗消耗所以从开门狗那里调用）
                     message_chunk,metadata = item
