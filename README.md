@@ -44,9 +44,10 @@ FastAPI（api.py）
   └─ chat_loop（agent.py）──→ LangGraph create_agent
         │
         ├─ 中间件链（middleware.py）
-        │    修复孤立 tool_call → 历史裁剪(20 轮) → 确认后清内存
+        │    每次模型调用前：修复孤立 tool_call → 历史裁剪(20 轮)
         │    → 加载未注册工具/逐工具限额 → 只暴露已选工具 + 关思考 + 超步降级
-        │    → 步数计数/熔断 → 动态系统提示词 → 计划卡注入
+        │    → 步数计数/熔断 → 动态系统提示词
+        │    Agent 结束后：定稿清内存 · 计划卡注入
         │
         └─ 工具层
              高德 MCP（限流 3 QPS + 返回瘦身，剔除导航类工具）
@@ -64,12 +65,61 @@ PostgreSQL（ORM_SQLAlchemy.py / sql语句.sql）
 
 ---
 
+## 请求链路
+
+```mermaid
+flowchart LR
+    U["用户输入<br/>POST /agent/旅行agent/"] --> T{"token 校验"}
+    T -- 失败 --> T1["401"]
+    T -- 通过 --> G{"领域守卫<br/>fail-closed · 15s"}
+    G -- 三角形 --> G1["400 非旅行请求"]
+    G -- 超时 --> G2["504"]
+    G -- 系统错误 --> G3["500"]
+    G -- 其他 --> A["主 Agent<br/>五层限制（见下）"]
+    A --> DONE["结束<br/>4–5 句介绍 + 计划卡"]
+    A --> F1["兜底：52 步硬熔断"]
+    A --> F2["兜底：总时长 / 空闲双看门狗"]
+    F1 --> SOFT["道歉话术<br/>提示重新询问"]
+    F2 --> SOFT
+```
+
+### 主 Agent：五层限制
+
+从外到内，请求每进一层就多一组约束；运行中触发阈值时，则是外层能力被一层层剥掉，而不是整单失败。
+
+```mermaid
+flowchart TB
+    subgraph L1["① 会话层　每次模型调用前"]
+        direction TB
+        N1["修复孤立 tool_call · 历史裁剪（超过 20 轮）· 注入当前时间"]
+        subgraph L2["② 可见性层　每次模型调用前"]
+            direction TB
+            N2["只暴露 select_tools + save_plan + 本轮已选工具<br/>save_plan 返回后关闭思考<br/>超过 45 步只留 save_plan"]
+            subgraph L3["③ 执行层　每次工具调用"]
+                direction TB
+                N3["入参哨兵清洗 · 未注册工具拦截<br/>逐工具上限 3–8 次 · 52 步硬熔断"]
+                subgraph L4["④ 业务层　核心"]
+                    direction TB
+                    N4["计划表评判员：不合理则拒绝入库、不发卡片<br/>合理则写工作台 · 定稿写穿三张表 · 冷区 3 年"]
+                end
+            end
+        end
+    end
+    L4 --> OUT["输出层<br/>计划卡注入 + 标记切分 + 4–5 句介绍"]
+    OUT --> U2["用户"]
+    L4 -. 兜底 .-> CUT["总闸 / 空闲闸 / 硬熔断打断"]
+```
+
+剥洋葱的三段：**全部已选工具 →（45 步）仅剩 `save_plan` →（52 步或撞闸）强制结束并给出话术**。最内层永远是"把已有信息落成一张计划表"，所以卡住的单也会以一个明确的结局收尾，而不是无声中断。
+
+---
+
 ## 技术栈
 
 | 层 | 选择 |
 | --- | --- |
 | Agent 框架 | LangChain v1 `create_agent` + LangGraph v1（装饰器中间件、自定义 state schema） |
-| 模型 | 通义千问（OpenAI 兼容协议）；主模型 + 小模型（守卫/评判员，关闭思考） |
+| 模型 | 通义千问（OpenAI 兼容协议）；主模型、小模型（守卫/评判员，关闭思考）、主模型关思考实例（`save_plan` 返回后使用） |
 | 外部工具 | 高德地图 MCP（SSE）、Linkup 联网搜索 |
 | Web | FastAPI + StreamingResponse（`text/plain`） |
 | 数据库 | PostgreSQL（asyncpg + SQLAlchemy 2.0 异步 ORM） |
@@ -86,7 +136,7 @@ PostgreSQL（ORM_SQLAlchemy.py / sql语句.sql）
 
 **2. 三层运行护栏**
 - 逐工具调用上限（`TOOL_LIMIT`）：防止同一工具换参数反复重试；
-- 超步计数：45 步起给出警告，超过 45 步只暴露 `save_plan`，52 步强制跳转结束；
+- 超步计数：46 步起给出警告（`step_count > 45`），超过 45 步只暴露 `save_plan`，52 步强制跳转结束；
 - 双看门狗：总时长 300s 硬闸 + 单次等待 60s 空闲闸。
 
 **3. 计划表流水线**
@@ -130,9 +180,22 @@ MCP 客户端挂两个拦截器：共享令牌桶把调用间隔排到 3 QPS；�
 │  ├─ cold_zone.py        冷区查询工具
 │  └─ domain_guard.py     领域守卫 + 计划表评判员
 ├─ frontend/index.html    流式对话页 + 登录 + 计划卡片渲染（无构建）
+├─ tests/test_offline.py  离线单测（28 例：不联网 / 不连库 / 不调模型）
 ├─ sql语句.sql            数据库建表脚本（含触发器与索引，可作为 schema 真相源）
 └─ pyproject.toml / uv.lock
 ```
+
+---
+
+## 测试
+
+仓库内置 28 个离线用例，不联网、不连数据库、不调用模型：
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+覆盖工具名合并、历史裁剪（20 轮）、逐工具调用上限、超步熔断、`select_tools` 校验、高德返回瘦身、密码与令牌哈希、异常归因、计划表结构与 `save_plan` 入库流水线。导入模块时会读取 `.env`（模型与数据库连接串在模块级初始化），用例本身不发起网络请求，也不写库。
 
 ---
 
@@ -162,6 +225,7 @@ uv sync
 3. 建库
 
 ```bash
+createdb -U postgres travel_agent_db
 psql -U postgres -d travel_agent_db -f "sql语句.sql"
 ```
 
@@ -219,3 +283,9 @@ uv run uvicorn api:app --host 127.0.0.1 --port 8000
 ## 说明
 
 项目为个人练习作品，用于学习 Agent 工程化：工具编排、状态与中间件、结构化输出、记忆分层、外部 API 治理与失败降级。不提供真实的预订、支付或导航能力。
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 乱七八糟炒饭 (mmfr)

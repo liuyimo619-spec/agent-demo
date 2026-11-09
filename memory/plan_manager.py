@@ -357,16 +357,16 @@ async def _save_plan(runtime: ToolRuntime,plan_data: PlanData,summary: Optional[
                 'messages':[ToolMessage(content=f'计划表已保存到工作台并发给用户，该计划表版本号为{version_no}，禁止复述计划表内容。',tool_call_id=runtime.tool_call_id,artifact={'render_type':'plan_card', 'markdown':itinerary})]
             })
         else:
-            return Command(update={
-                            'messages':[ToolMessage(content=f'{verdict.reason},计划表不合理，拒绝入库拒绝发送给客户',status="error",tool_call_id=runtime.tool_call_id)]
-                        })
+            return Command(update={'messages':[ToolMessage(content=f'【计划表被打回】{verdict.reason}。先用一句话（≤25字）告诉用户打回点并说明正在修补，'
+                f'然后按原因修改计划表并重新调用 save_plan；不要重复提交相同内容，不要等待用户确认。',status="error", tool_call_id=runtime.tool_call_id)]
+                })
         
     except Exception as e:
         return tool_error_handler(e)
 save_plan = StructuredTool.from_function(
     coroutine=_save_plan,
     name="save_plan",
-    description="旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表,保存到工作台并发送给用户，禁止复述计划表内容。",
+    description="旅行计划表构建工具，会自动生成计划表以及版本号返回旅行计划表,保存到工作台并发送给用户，禁止复述计划表内容。若返回【计划表被打回】，先用一句话说明打回点并修补，再重新保存，不要重复提交相同版本。",
     args_schema=SavePlanInput
 )
 

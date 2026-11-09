@@ -4,7 +4,7 @@
 select_tools 校验、返回瘦身、认证哈希、异常归因、计划表结构与入库流水线。
 
 运行（项目根目录）：
-    python -m unittest discover -s tests -v
+    uv run python -m unittest discover -s tests -v
 """
 
 import asyncio
