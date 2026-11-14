@@ -12,6 +12,8 @@ from memory.domain_guard import check_domain,check_domain_guard
 from logger import logger
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+import re
+URL_RE = re.compile(r"https?://", re.I)
 # 生命周期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,6 +64,8 @@ class ChatRequest(BaseModel):
 #流式响应接口
 @app.post("/agent/旅行agent/")
 async def travel_agent(request: ChatRequest,user_id:tuple[str,str] = Depends(verifytoken)):
+    if URL_RE.search(request.message):
+        raise HTTPException(status_code=400, detail="当前不支持链接或图片，请用文字描述")
     # 检测用户输入是否属于旅行规划领域
     domain_guard_agent = app.state.agent_instance
 
